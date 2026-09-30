@@ -445,6 +445,8 @@ pub fn render_context_page(
     }
 }
 
+// replaced by the sidebar in `shell`; kept to ease upstream merges
+#[allow(dead_code)]
 pub fn render_library_page(
     is_active: bool,
     frame: &mut Frame,
@@ -759,12 +761,29 @@ pub fn render_commands_help_page(frame: &mut Frame, ui: &mut UIStateGuard, rect:
             }
         });
 
+    let mut rows: Vec<(String, String, String)> = map
+        .into_iter()
+        .map(|(command, keys)| (format!("{command:?}"), keys, command.desc().clone()))
+        .collect();
+    // actions bound to keys (like, add to playlist, ...)
+    for am in &configs.keymap_config.actions {
+        let on = match am.target {
+            crate::command::ActionTarget::PlayingTrack => "the playing song",
+            crate::command::ActionTarget::SelectedItem => "the selected item",
+        };
+        rows.push((
+            format!("{:?}", am.action),
+            format!("\"{}\"", am.key_sequence),
+            format!("{} ({on})", action_desc(am.action)),
+        ));
+    }
+
     let scroll_offset = match ui.current_page_mut() {
         PageState::CommandHelp {
             ref mut scroll_offset,
         } => {
-            if !map.is_empty() && *scroll_offset >= map.len() {
-                *scroll_offset = map.len() - 1;
+            if !rows.is_empty() && *scroll_offset >= rows.len() {
+                *scroll_offset = rows.len() - 1;
             }
             *scroll_offset
         }
@@ -776,14 +795,14 @@ pub fn render_commands_help_page(frame: &mut Frame, ui: &mut UIStateGuard, rect:
 
     // 3. Construct the page's widget
     let help_table = Table::new(
-        map.into_iter()
+        rows.into_iter()
             .skip(scroll_offset)
             .enumerate()
-            .map(|(i, (command, keys))| {
+            .map(|(i, (name, keys, desc))| {
                 Row::new(vec![
-                    Cell::from(format!("{command:?}")),
+                    Cell::from(name),
                     Cell::from(format!("[{keys}]")),
-                    Cell::from(command.desc()),
+                    Cell::from(desc),
                 ])
                 // adding alternating row colors
                 .style(if (i + scroll_offset) % 2 == 0 {
@@ -806,6 +825,31 @@ pub fn render_commands_help_page(frame: &mut Frame, ui: &mut UIStateGuard, rect:
 
     // 4. Render the page's widget
     frame.render_widget(help_table, rect);
+}
+
+/// What an action does, for the help page.
+fn action_desc(action: crate::command::Action) -> &'static str {
+    use crate::command::Action;
+    match action {
+        Action::ToggleLiked => "like / unlike",
+        Action::AddToLiked => "like",
+        Action::DeleteFromLiked => "unlike",
+        Action::AddToPlaylist => "add to a playlist",
+        Action::DeleteFromPlaylist => "remove from this playlist or the queue",
+        Action::AddToQueue => "add to the queue",
+        Action::AddToLibrary => "save to your library",
+        Action::DeleteFromLibrary => "remove from your library",
+        Action::GoToArtist => "go to the artist",
+        Action::GoToAlbum => "go to the album",
+        Action::GoToRadio => "start its radio",
+        Action::GoToShow => "go to the show",
+        Action::CopyLink => "copy its link",
+        Action::Follow => "follow",
+        Action::Unfollow => "unfollow",
+        Action::ShowActionsOnAlbum | Action::ShowActionsOnArtist | Action::ShowActionsOnShow => {
+            "show more actions"
+        }
+    }
 }
 
 pub fn render_queue_page(

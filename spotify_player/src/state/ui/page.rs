@@ -1,4 +1,5 @@
 use crate::{
+    command::Command,
     state::model::{Category, ContextId},
     ui::single_line_input::LineInput,
 };
@@ -50,8 +51,61 @@ pub enum PageType {
     Logs,
 }
 
+/// An entry of the sidebar menu above the playlists: a label and the command
+/// it runs (search, liked songs, ...).
+pub struct LibraryMenuItem {
+    pub icon: &'static str,
+    pub label: &'static str,
+    pub command: Command,
+}
+
+/// The sidebar menu, in display order.
+pub const LIBRARY_MENU: &[LibraryMenuItem] = &[
+    LibraryMenuItem {
+        icon: "⌕",
+        label: "Search",
+        command: Command::SearchPage,
+    },
+    LibraryMenuItem {
+        icon: "♥",
+        label: "Liked Songs",
+        command: Command::LikedTrackPage,
+    },
+    LibraryMenuItem {
+        icon: "↺",
+        label: "Recently played",
+        command: Command::RecentlyPlayedTrackPage,
+    },
+    LibraryMenuItem {
+        icon: "★",
+        label: "Top tracks",
+        command: Command::TopTrackPage,
+    },
+    LibraryMenuItem {
+        icon: "◉",
+        label: "Albums",
+        command: Command::BrowseUserSavedAlbums,
+    },
+    LibraryMenuItem {
+        icon: "♫",
+        label: "Artists",
+        command: Command::BrowseUserFollowedArtists,
+    },
+    LibraryMenuItem {
+        icon: "▦",
+        label: "Browse",
+        command: Command::BrowsePage,
+    },
+    LibraryMenuItem {
+        icon: "¶",
+        label: "Lyrics",
+        command: Command::LyricsPage,
+    },
+];
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LibraryPageUIState {
+    pub menu_list: ListState,
     pub playlist_list: ListState,
     pub saved_album_list: ListState,
     pub followed_artist_list: ListState,
@@ -101,8 +155,13 @@ pub enum ContextPageUIState {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LibraryFocusState {
+    Menu,
     Playlists,
+    // no longer their own windows (they open from the menu); kept for
+    // upstream merges
+    #[allow(dead_code)]
     SavedAlbums,
+    #[allow(dead_code)]
     FollowedArtists,
 }
 
@@ -176,6 +235,7 @@ impl PageState {
             Self::Library {
                 state:
                     LibraryPageUIState {
+                        menu_list,
                         playlist_list,
                         saved_album_list,
                         followed_artist_list,
@@ -183,6 +243,7 @@ impl PageState {
                         ..
                     },
             } => Some(match focus {
+                LibraryFocusState::Menu => MutableWindowState::List(menu_list),
                 LibraryFocusState::Playlists => MutableWindowState::List(playlist_list),
                 LibraryFocusState::SavedAlbums => MutableWindowState::List(saved_album_list),
                 LibraryFocusState::FollowedArtists => {
@@ -251,10 +312,11 @@ impl PageState {
 impl LibraryPageUIState {
     pub fn new() -> Self {
         Self {
+            menu_list: ListState::default().with_selected(Some(0)),
             playlist_list: ListState::default(),
             saved_album_list: ListState::default(),
             followed_artist_list: ListState::default(),
-            focus: LibraryFocusState::Playlists,
+            focus: LibraryFocusState::Menu,
             playlist_folder_id: 0,
         }
     }
@@ -420,12 +482,20 @@ macro_rules! impl_focusable {
 	};
 }
 
-impl_focusable!(
-    LibraryFocusState,
-    [Playlists, SavedAlbums],
-    [SavedAlbums, FollowedArtists],
-    [FollowedArtists, Playlists]
-);
+// The sidebar has two lists: the menu and the playlists. Saved albums and
+// followed artists open from the menu (they no longer have their own window).
+impl Focusable for LibraryFocusState {
+    fn next(&mut self) {
+        *self = match self {
+            Self::Menu => Self::Playlists,
+            Self::Playlists | Self::SavedAlbums | Self::FollowedArtists => Self::Menu,
+        };
+    }
+
+    fn previous(&mut self) {
+        self.next();
+    }
+}
 
 impl_focusable!(
     ArtistFocusState,

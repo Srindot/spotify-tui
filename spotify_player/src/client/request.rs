@@ -20,6 +20,14 @@ pub enum PlayerRequest {
 }
 
 #[derive(Clone, Debug)]
+/// An edit to the integrated player's queue (indices into what's coming up)
+pub enum QueueEdit {
+    Remove(usize),
+    Move { from: usize, to: usize },
+    Play(usize),
+}
+
+#[derive(Clone, Debug)]
 /// A request to the client
 pub enum ClientRequest {
     GetCurrentUser,
@@ -53,6 +61,11 @@ pub enum ClientRequest {
     },
     #[cfg(feature = "streaming")]
     RestartIntegratedClient,
+    /// refresh what's coming up on the integrated player
+    #[cfg(feature = "streaming")]
+    GetLocalQueue,
+    #[cfg(feature = "streaming")]
+    EditLocalQueue(QueueEdit),
     CreatePlaylist {
         playlist_name: String,
         public: bool,

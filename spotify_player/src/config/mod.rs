@@ -297,7 +297,7 @@ impl Command {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            theme: "dracula".to_owned(),
+            theme: "rose-pine".to_owned(),
             // Use ncspot's client ID as a fallback for user-provided client ID
             //
             // Most of the time, using ncspot's client ID is better than user-provided one
@@ -386,7 +386,7 @@ impl Default for AppConfig {
             enable_streaming: StreamingType::Always,
 
             #[cfg(feature = "streaming")]
-            enable_audio_visualization: false,
+            enable_audio_visualization: true,
 
             #[cfg(feature = "notify")]
             enable_notify: true,

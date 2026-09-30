@@ -12,4 +12,4 @@ pub static USER_RECENTLY_PLAYED_TRACKS_ID: LazyLock<TracksId> =
     LazyLock::new(|| TracksId::new(USER_RECENTLY_PLAYED_TRACKS_URI, "Recently Played Tracks"));
 
 pub static USER_LIKED_TRACKS_ID: LazyLock<TracksId> =
-    LazyLock::new(|| TracksId::new(USER_LIKED_TRACKS_URI, "Liked Tracks"));
+    LazyLock::new(|| TracksId::new(USER_LIKED_TRACKS_URI, "Liked Songs"));

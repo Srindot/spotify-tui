@@ -165,7 +165,7 @@ pub fn init_cli() -> anyhow::Result<clap::Command> {
     let default_cache_folder = config::get_cache_folder_path()?;
     let default_config_folder = config::get_config_folder_path()?;
 
-    let cmd = clap::Command::new(env!("CARGO_PKG_NAME"))
+    let cmd = clap::Command::new(env!("CARGO_BIN_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .author(env!("CARGO_PKG_AUTHORS"))

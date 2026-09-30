@@ -1,3 +1,16 @@
+# spotify-tui
+
+A personal fork of [spotify_player](https://github.com/aome510/spotify-player)
+by aome510 (MIT): the same player, with a new three-column layout (sidebar with
+your library, now playing with the audio wave, Up Next), built-in Rosé Pine
+themes (`rose-pine`, `rose-pine-moon`, `rose-pine-dawn`), `S` to search, and a
+fix for searches failing when podcast episodes were in the results.
+
+Install from this repo: `make install` (the `spotify_tui` command, plus a launcher for
+rofi and app menus that opens it in kitty; `make install TERMINAL=alacritty` for
+another terminal). Settings stay in `~/.config/spotify-player`.
+Everything below is the original project's documentation.
+
 # spotify_player
 
 ## Table of Contents

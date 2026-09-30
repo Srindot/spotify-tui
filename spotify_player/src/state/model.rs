@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::fmt::{Display, Write};
 
 /// A trait similar to Display but with bidirectional text support
+#[allow(dead_code)] // was only used by the old library page
 pub trait BidiDisplay: Display {
     fn to_bidi_string(&self) -> String {
         let disp_str = self.to_string();

@@ -22,3 +22,8 @@ cast_precision_loss = { level = "allow", priority = 20 }
 missing_errors_doc = { level = "allow", priority = 20 }
 similar_names = { level = "allow", priority = 20 }
 too_many_lines = { level = "allow", priority = 20 }
+
+# A copy of librespot-connect 0.8.0 (MIT) with queue editing added
+# (list / remove / move / play-from / add); see vendor/librespot-connect/QUEUE.md.
+[patch.crates-io]
+librespot-connect = { path = "vendor/librespot-connect" }

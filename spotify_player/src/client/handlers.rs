@@ -230,8 +230,22 @@ pub fn start_player_event_watcher(state: &SharedState, client_pub: &flume::Sende
         ended_playable_uri: None,
         last_queue_refresh: None,
     };
+    #[cfg(feature = "streaming")]
+    let mut last_local_queue = Instant::now();
 
     loop {
+        // what's coming up on the integrated player: a local call to
+        // librespot (no Spotify request), so often is fine
+        #[cfg(feature = "streaming")]
+        if state.player.read().local.is_some()
+            && last_local_queue.elapsed() >= Duration::from_secs(1)
+        {
+            client_pub
+                .send(ClientRequest::GetLocalQueue)
+                .unwrap_or_default();
+            last_local_queue = Instant::now();
+        }
+
         // periodically refresh the playback state (if enabled in config)
         if configs.app_config.playback_refresh_duration_in_ms > 0
             && handler_state.last_playback_refresh.elapsed() >= playback_refresh_duration

@@ -148,6 +148,81 @@ fn execute_player_event_hook_command(
 }
 
 /// Create a new streaming connection
+/// Keep `PlayerState::local` in step with the integrated player, so the
+/// now-playing display updates at once instead of waiting for the Web API.
+fn track_local_playback(client: &AppClient, state: &SharedState, event: &player::PlayerEvent) {
+    use crate::state::LocalNowPlaying;
+    use librespot_metadata::audio::UniqueFields;
+    let ms = |ms: u32| chrono::Duration::milliseconds(i64::from(ms));
+    let mut player = state.player.write();
+    match event {
+        player::PlayerEvent::TrackChanged { audio_item } => {
+            let (artists, album) = match &audio_item.unique_fields {
+                UniqueFields::Track { artists, album, .. } => (
+                    artists
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    album.clone(),
+                ),
+                UniqueFields::Episode { show_name, .. } => (String::new(), show_name.clone()),
+                UniqueFields::Local { artists, album, .. } => (
+                    artists.clone().unwrap_or_default(),
+                    album.clone().unwrap_or_default(),
+                ),
+            };
+            // the largest cover (they come smallest first)
+            let cover_url = audio_item
+                .covers
+                .iter()
+                .max_by_key(|c| c.width)
+                .map(|c| c.url.clone());
+            let is_playing = player.local.as_ref().is_some_and(|l| l.is_playing);
+            player.local = Some(LocalNowPlaying {
+                uri: audio_item.uri.clone(),
+                name: audio_item.name.clone(),
+                artists,
+                album,
+                cover_url: cover_url.clone(),
+                duration: ms(audio_item.duration_ms),
+                is_playing,
+                position: chrono::Duration::zero(),
+                updated_at: std::time::Instant::now(),
+            });
+            drop(player);
+            if let Some(url) = cover_url {
+                let (client, state) = (client.clone(), state.clone());
+                tokio::spawn(async move {
+                    if let Err(err) = client.load_cover_image(&state, &url).await {
+                        tracing::warn!("Failed to load the cover image: {err:#}");
+                    }
+                });
+            }
+        }
+        player::PlayerEvent::Playing { position_ms, .. }
+        | player::PlayerEvent::Paused { position_ms, .. }
+        | player::PlayerEvent::Seeked { position_ms, .. }
+        | player::PlayerEvent::PositionCorrection { position_ms, .. }
+        | player::PlayerEvent::PositionChanged { position_ms, .. } => {
+            if let Some(local) = player.local.as_mut() {
+                match event {
+                    player::PlayerEvent::Playing { .. } => local.is_playing = true,
+                    player::PlayerEvent::Paused { .. } => local.is_playing = false,
+                    _ => {}
+                }
+                local.position = ms(*position_ms);
+                local.updated_at = std::time::Instant::now();
+            }
+        }
+        // stopped here, e.g. playback moved to another device
+        player::PlayerEvent::Stopped { .. } | player::PlayerEvent::SessionDisconnected { .. } => {
+            player.local = None;
+        }
+        _ => {}
+    }
+}
+
 pub async fn new_connection(
     client: AppClient,
     state: SharedState,
@@ -261,6 +336,8 @@ pub async fn new_connection(
                         _ => {}
                     }
                 }
+
+                track_local_playback(&client, &state, &event);
 
                 match PlayerEvent::from_librespot_player_event(event) {
                     Err(err) => {

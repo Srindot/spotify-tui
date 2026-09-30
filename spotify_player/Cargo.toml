@@ -9,6 +9,12 @@ repository = "https://github.com/aome510/spotify-player"
 keywords = ["spotify", "tui", "ratatui", "player"]
 readme = "../README.md"
 
+# installed as `spotify_tui` (the package keeps its upstream name, which log
+# filters and module paths use)
+[[bin]]
+name = "spotify_tui"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive", "string"] }

@@ -33,7 +33,30 @@ pub struct ActionMap {
 impl Default for KeymapConfig {
     fn default() -> Self {
         KeymapConfig {
-            actions: vec![],
+            // one-key shortcuts for the most used actions (all of them are
+            // also in the actions menu: ctrl+space, or `a` for the playing song)
+            actions: vec![
+                ActionMap {
+                    key_sequence: "L".into(),
+                    target: ActionTarget::SelectedItem,
+                    action: Action::ToggleLiked,
+                },
+                ActionMap {
+                    key_sequence: "C-l".into(),
+                    target: ActionTarget::PlayingTrack,
+                    action: Action::ToggleLiked,
+                },
+                ActionMap {
+                    key_sequence: "P".into(),
+                    target: ActionTarget::SelectedItem,
+                    action: Action::AddToPlaylist,
+                },
+                ActionMap {
+                    key_sequence: "X".into(),
+                    target: ActionTarget::SelectedItem,
+                    action: Action::DeleteFromPlaylist,
+                },
+            ],
             keymaps: vec![
                 Keymap {
                     key_sequence: "n".into(),
@@ -193,6 +216,11 @@ impl Default for KeymapConfig {
                     command: Command::SearchPage,
                 },
                 Keymap {
+                    // one key for search (`/` only filters the current list)
+                    key_sequence: "S".into(),
+                    command: Command::SearchPage,
+                },
+                Keymap {
                     key_sequence: "g b".into(),
                     command: Command::BrowsePage,
                 },
@@ -210,6 +238,10 @@ impl Default for KeymapConfig {
                 },
                 Keymap {
                     key_sequence: "?".into(),
+                    command: Command::OpenCommandHelp,
+                },
+                Keymap {
+                    key_sequence: "f".into(),
                     command: Command::OpenCommandHelp,
                 },
                 Keymap {
@@ -477,5 +509,49 @@ impl From<&str> for KeySequence {
     /// representation of a `KeySequence`.
     fn from(s: &str) -> Self {
         Self::from_str(s).unwrap_or_else(|| panic!("invalid key sequence {s}"))
+    }
+}
+
+#[cfg(test)]
+mod action_key_tests {
+    use super::KeymapConfig;
+
+    #[test]
+    fn action_keys_dont_clash_with_commands() {
+        let config = KeymapConfig::default();
+        for action in &config.actions {
+            assert!(
+                !config
+                    .keymaps
+                    .iter()
+                    .any(|k| k.key_sequence == action.key_sequence),
+                "{} is bound to both a command and {:?}",
+                action.key_sequence,
+                action.action
+            );
+        }
+        let keys: Vec<String> = config
+            .actions
+            .iter()
+            .map(|a| a.key_sequence.to_string())
+            .collect();
+        for key in ["L", "C-l", "P", "X"] {
+            assert!(keys.iter().any(|k| k == key), "{key} not bound");
+        }
+        // every key sequence means one thing
+        let mut all: Vec<String> = config
+            .keymaps
+            .iter()
+            .map(|k| k.key_sequence.to_string())
+            .collect();
+        let n = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), n, "a key is bound to two commands");
+        assert!(config
+            .keymaps
+            .iter()
+            .any(|k| k.key_sequence.to_string() == "f"
+                && k.command == crate::command::Command::OpenCommandHelp));
     }
 }

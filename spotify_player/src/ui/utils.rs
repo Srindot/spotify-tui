@@ -15,7 +15,11 @@ pub fn construct_and_render_block(
     frame: &mut Frame,
     rect: Rect,
 ) -> Rect {
-    let mut title = title.to_string();
+    let mut title = if title.is_empty() {
+        String::new()
+    } else {
+        format!(" {title} ")
+    };
 
     let configs = config::get_config();
 

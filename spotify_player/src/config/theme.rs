@@ -188,6 +188,14 @@ impl ThemeConfig {
 }
 
 impl Theme {
+    /// The theme's accent colours, for colouring things apart (menu icons,
+    /// panels, playlists). From the palette, so any theme gets its own; in
+    /// Rosé Pine: rose, gold, foam, iris, love, pine.
+    pub fn accent(&self, i: usize) -> style::Color {
+        let p = &self.palette;
+        [&p.cyan, &p.yellow, &p.blue, &p.magenta, &p.red, &p.green][i % 6].color
+    }
+
     pub fn app(&self) -> style::Style {
         let mut style = style::Style::default();
         if let Some(ref c) = self.palette.background {
@@ -613,11 +621,17 @@ impl From<style::Color> for Color {
     }
 }
 
+/// Built-in Rosé Pine themes (rose-pine, rose-pine-moon, rose-pine-dawn).
+const ROSE_PINE_THEMES: &str = include_str!("rose_pine_themes.toml");
+
 impl Default for ThemeConfig {
     fn default() -> Self {
-        Self {
-            themes: vec![Theme::default()],
+        let mut themes = vec![Theme::default()];
+        match toml::from_str::<Self>(ROSE_PINE_THEMES) {
+            Ok(builtin) => themes.extend(builtin.themes),
+            Err(err) => tracing::error!("Failed to parse the built-in Rosé Pine themes: {err:#}"),
         }
+        Self { themes }
     }
 }
 
@@ -654,5 +668,25 @@ impl Default for Palette {
             bright_cyan: Color::bright_cyan(),
             bright_white: Color::bright_white(),
         }
+    }
+}
+
+#[cfg(test)]
+mod rose_pine_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_rose_pine_themes_load() {
+        let config = ThemeConfig::default();
+        for name in ["default", "rose-pine", "rose-pine-moon", "rose-pine-dawn"] {
+            assert!(config.find_theme(name).is_some(), "missing theme {name}");
+        }
+        let theme = config.find_theme("rose-pine").unwrap();
+        // transparent: no background, the terminal's shows through
+        assert_eq!(theme.app().bg, None);
+        assert_eq!(
+            theme.playback_status().fg,
+            Some(style::Color::Rgb(0xeb, 0xbc, 0xba)) // rose
+        );
     }
 }

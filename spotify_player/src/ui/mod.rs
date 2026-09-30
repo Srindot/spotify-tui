@@ -2,9 +2,9 @@ use crate::{
     config,
     state::{
         Album, Artist, ArtistFocusState, BrowsePageUIState, Context, ContextPageUIState,
-        DataReadGuard, Id, LibraryFocusState, MutableWindowState, PageState, PageType,
-        PlaybackMetadata, PlaylistCreateCurrentField, PlaylistFolderItem, PlaylistPopupAction,
-        PopupState, SearchFocusState, SharedState, Track, UIStateGuard,
+        DataReadGuard, Id, LibraryFocusState, MutableWindowState, PageState, PlaybackMetadata,
+        PlaylistCreateCurrentField, PlaylistFolderItem, PlaylistPopupAction, PopupState,
+        SearchFocusState, SharedState, Track, UIStateGuard,
     },
 };
 use anyhow::{Context as AnyhowContext, Result};
@@ -27,8 +27,11 @@ type Terminal = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::St
 #[cfg(feature = "image")]
 pub mod cover_image;
 mod page;
+// the old top playback window, replaced by `shell`; kept to ease upstream merges
+#[allow(dead_code)]
 mod playback;
 mod popup;
+mod shell;
 pub mod single_line_input;
 #[cfg(feature = "streaming")]
 pub mod streaming;
@@ -135,41 +138,9 @@ fn clean_up(mut terminal: Terminal) -> Result<()> {
     Ok(())
 }
 
-/// Render the application
+/// Render the application: see `shell` for the layout.
 fn render_application(frame: &mut Frame, state: &SharedState, ui: &mut UIStateGuard, rect: Rect) {
-    // rendering order: playback window -> shortcut help popup -> other popups -> main layout
-
-    // render playback window before other popups and windows to ensure nothing is rendered on top
-    // of the playback window, which is to avoid "duplicated images" issue
-    // See: https://github.com/aome510/spotify-player/issues/498
-    let rect = playback::render_playback_window(frame, state, ui, rect);
-
-    let rect = popup::render_shortcut_help_popup(frame, ui, rect);
-
-    let (rect, is_active) = popup::render_popup(frame, state, ui, rect);
-
-    render_main_layout(is_active, frame, state, ui, rect);
-}
-
-/// Render the application's main layout
-fn render_main_layout(
-    is_active: bool,
-    frame: &mut Frame,
-    state: &SharedState,
-    ui: &mut UIStateGuard,
-    rect: Rect,
-) {
-    let page_type = ui.current_page().page_type();
-    match page_type {
-        PageType::Library => page::render_library_page(is_active, frame, state, ui, rect),
-        PageType::Search => page::render_search_page(is_active, frame, state, ui, rect),
-        PageType::Context => page::render_context_page(is_active, frame, state, ui, rect),
-        PageType::Browse => page::render_browse_page(is_active, frame, state, ui, rect),
-        PageType::Lyrics => page::render_lyrics_page(is_active, frame, state, ui, rect),
-        PageType::Queue => page::render_queue_page(frame, state, ui, rect),
-        PageType::CommandHelp => page::render_commands_help_page(frame, ui, rect),
-        PageType::Logs => page::render_logs_page(frame, state, ui, rect),
-    }
+    shell::render(frame, state, ui, rect);
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -192,6 +163,7 @@ impl Orientation {
         }
     }
 
+    #[allow(dead_code)] // was only used by the old library page
     pub fn layout<I>(self, constraints: I) -> Layout
     where
         I: IntoIterator,

@@ -357,6 +357,334 @@ impl AppClient {
         }
     }
 
+    /// Run a player command on the integrated player (librespot) when it's
+    /// the device playing. That goes over Spotify Connect, not the Web API, so
+    /// it isn't rate limited: through the Web API, presses often failed with
+    /// "429 Too Many Requests" and had to be repeated. Returns `false` when the
+    /// command has to go through the Web API (another device is playing, or
+    /// librespot doesn't handle it).
+    #[cfg(feature = "streaming")]
+    async fn try_integrated_player(
+        &self,
+        request: &PlayerRequest,
+        playback: &PlaybackMetadata,
+    ) -> bool {
+        let Some(device_id) = playback.device_id.as_deref() else {
+            return false;
+        };
+        if self.stream_conn.lock().is_none()
+            || self.spotify.session().await.device_id() != device_id
+        {
+            return false;
+        }
+        let conn = self.stream_conn.lock();
+        let Some(spirc) = conn.as_ref() else {
+            return false;
+        };
+        let result = match request {
+            PlayerRequest::NextTrack => spirc.next(),
+            PlayerRequest::PreviousTrack => spirc.prev(),
+            PlayerRequest::Pause => spirc.pause(),
+            PlayerRequest::Resume => spirc.play(),
+            // librespot's own toggle: right even when our state is stale
+            PlayerRequest::ResumePause => spirc.play_pause(),
+            PlayerRequest::SeekTrack(position) => spirc
+                .set_position_ms(position.num_milliseconds().clamp(0, i64::from(u32::MAX)) as u32),
+            PlayerRequest::Volume(volume) => spirc.set_volume(librespot_volume(*volume)),
+            PlayerRequest::ToggleMute => spirc.set_volume(match playback.mute_state {
+                None => 0,
+                Some(volume) => librespot_volume(volume as u8),
+            }),
+            PlayerRequest::Shuffle => spirc.shuffle(!playback.shuffle_state),
+            // repeat, starting and transferring playback: Web API
+            _ => return false,
+        };
+        match result {
+            Ok(()) => {
+                tracing::info!("Handled {request:?} on the integrated player");
+                true
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Integrated player couldn't handle {request:?}, using the Web API: {err:#}"
+                );
+                false
+            }
+        }
+    }
+
+    /// Whether the integrated player is the device playing, and so owns the
+    /// queue shown and edited in the app.
+    #[cfg(feature = "streaming")]
+    async fn is_playing_here(&self, state: &SharedState) -> bool {
+        if self.stream_conn.lock().is_none() {
+            return false;
+        }
+        let device = state
+            .player
+            .read()
+            .buffered_playback
+            .as_ref()
+            .and_then(|p| p.device_id.clone());
+        match device {
+            Some(d) => self.spotify.session().await.device_id() == d,
+            None => false,
+        }
+    }
+
+    /// Refresh `PlayerState::local_queue` from librespot, and look up the
+    /// names of any tracks in it the app doesn't know yet.
+    #[cfg(feature = "streaming")]
+    pub async fn refresh_local_queue(&self, state: &SharedState) {
+        if !self.is_playing_here(state).await {
+            state.player.write().local_queue = None;
+            return;
+        }
+        let spirc = self.stream_conn.lock().clone();
+        let Some(spirc) = spirc else {
+            return;
+        };
+        let upcoming = match spirc.queue().await {
+            Ok(list) => list,
+            Err(err) => {
+                tracing::warn!("Failed to read the integrated player's queue: {err:#}");
+                return;
+            }
+        };
+        let items: Vec<crate::state::LocalQueueItem> = upcoming
+            .into_iter()
+            .map(|(uri, queued)| crate::state::LocalQueueItem { uri, queued })
+            .collect();
+        let missing = Self::name_queue_items(state, &items);
+        state.player.write().local_queue = Some(items);
+        if !missing.is_empty() {
+            self.fetch_queue_names(state, missing).await;
+        }
+    }
+
+    /// Fill in queue names the app already knows (the Web API's queue, the
+    /// playing context, liked songs); returns the uris still unknown (the
+    /// first few, which are on screen).
+    #[cfg(feature = "streaming")]
+    fn name_queue_items(
+        state: &SharedState,
+        items: &[crate::state::LocalQueueItem],
+    ) -> Vec<String> {
+        use crate::state::QueueName;
+        let mut player = state.player.write();
+        let data = state.data.read();
+        let context_tracks: Vec<&Track> = player
+            .playing_context_id()
+            .and_then(|id| data.caches.context.get(&id.uri()))
+            .map(|c| match c {
+                Context::Playlist { tracks, .. }
+                | Context::Album { tracks, .. }
+                | Context::Tracks { tracks, .. } => tracks.iter().collect(),
+                _ => vec![],
+            })
+            .unwrap_or_default();
+        let from_track = |t: &Track| QueueName {
+            name: t.name.clone(),
+            artists: crate::utils::map_join(&t.artists, |a| &a.name, ", "),
+            duration: chrono::Duration::from_std(t.duration).unwrap_or_default(),
+        };
+        let mut known: Vec<(String, QueueName)> = vec![];
+        if let Some(queue) = &player.queue {
+            for item in &queue.queue {
+                if let rspotify::model::PlayableItem::Track(t) = item {
+                    if let Some(id) = &t.id {
+                        known.push((
+                            id.uri(),
+                            QueueName {
+                                name: t.name.clone(),
+                                artists: crate::utils::map_join(&t.artists, |a| &a.name, ", "),
+                                duration: t.duration,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        let mut missing = vec![];
+        for item in items.iter().take(30) {
+            if player.queue_names.contains_key(&item.uri)
+                || known.iter().any(|(uri, _)| uri == &item.uri)
+            {
+                continue;
+            }
+            let found = context_tracks
+                .iter()
+                .copied()
+                .chain(data.user_data.saved_tracks.values())
+                .find(|t| t.id.uri() == item.uri);
+            match found {
+                Some(t) => known.push((item.uri.clone(), from_track(t))),
+                None => missing.push(item.uri.clone()),
+            }
+        }
+        player.queue_names.extend(known);
+        missing
+    }
+
+    /// Look up track names with librespot (Spotify's own metadata service,
+    /// not the rate-limited Web API).
+    #[cfg(feature = "streaming")]
+    async fn fetch_queue_names(&self, state: &SharedState, uris: Vec<String>) {
+        use librespot_metadata::Metadata;
+        let session = self.spotify.session().await;
+        for uri in uris {
+            let Ok(id) = librespot_core::SpotifyUri::from_uri(&uri) else {
+                continue;
+            };
+            let name = match &id {
+                librespot_core::SpotifyUri::Track { .. } => {
+                    match librespot_metadata::Track::get(&session, &id).await {
+                        Ok(t) => crate::state::QueueName {
+                            name: t.name,
+                            artists: t
+                                .artists
+                                .0
+                                .iter()
+                                .map(|a| a.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            duration: chrono::Duration::milliseconds(i64::from(t.duration)),
+                        },
+                        Err(err) => {
+                            tracing::debug!("No metadata for {uri}: {err:#}");
+                            continue;
+                        }
+                    }
+                }
+                librespot_core::SpotifyUri::Episode { .. } => {
+                    match librespot_metadata::Episode::get(&session, &id).await {
+                        Ok(e) => crate::state::QueueName {
+                            name: e.name,
+                            artists: e.show_name,
+                            duration: chrono::Duration::milliseconds(i64::from(e.duration)),
+                        },
+                        Err(_) => continue,
+                    }
+                }
+                _ => continue,
+            };
+            state.player.write().queue_names.insert(uri, name);
+        }
+    }
+
+    /// Apply a queue edit on the integrated player, then show the new queue.
+    #[cfg(feature = "streaming")]
+    async fn edit_local_queue(&self, state: &SharedState, edit: QueueEdit) -> Result<()> {
+        if !self.is_playing_here(state).await {
+            anyhow::bail!("the queue can only be edited while playing in spotify_tui");
+        }
+        let spirc = self.stream_conn.lock().clone();
+        let Some(spirc) = spirc else {
+            return Ok(());
+        };
+        // show it at once; librespot's answer follows
+        if let Some(queue) = state.player.write().local_queue.as_mut() {
+            apply_queue_edit(queue, &edit);
+        }
+        match edit {
+            QueueEdit::Remove(i) => spirc.queue_remove(i)?,
+            QueueEdit::Move { from, to } => spirc.queue_move(from, to)?,
+            QueueEdit::Play(i) => spirc.queue_play(i)?,
+        }
+        self.refresh_local_queue(state).await;
+        Ok(())
+    }
+
+    /// Queue a track on the integrated player; `false` if not playing here.
+    #[cfg(feature = "streaming")]
+    async fn local_queue_add(&self, state: &SharedState, uri: &str) -> bool {
+        if !self.is_playing_here(state).await {
+            return false;
+        }
+        let spirc = self.stream_conn.lock().clone();
+        let Some(spirc) = spirc else {
+            return false;
+        };
+        if let Err(err) = spirc.queue_add(uri.to_string()) {
+            tracing::warn!("Integrated player couldn't queue {uri}, using the Web API: {err:#}");
+            return false;
+        }
+        tracing::info!("Queued {uri} on the integrated player");
+        self.refresh_local_queue(state).await;
+        true
+    }
+
+    /// Start a playback on the integrated player when it's the device playing,
+    /// over Spotify Connect instead of the rate-limited Web API (picking a song
+    /// often didn't start it). Returns `false` to use the Web API instead.
+    #[cfg(feature = "streaming")]
+    async fn try_integrated_start(
+        &self,
+        playback: &Playback,
+        current: Option<&PlaybackMetadata>,
+    ) -> bool {
+        use librespot_connect::{
+            LoadContextOptions, LoadRequest, LoadRequestOptions, Options, PlayingTrack,
+        };
+        let Some(current) = current else {
+            return false; // nothing playing: let Spotify pick the device
+        };
+        let Some(device_id) = current.device_id.as_deref() else {
+            return false;
+        };
+        if self.stream_conn.lock().is_none()
+            || self.spotify.session().await.device_id() != device_id
+        {
+            return false;
+        }
+        let playing_track = |offset: &Option<rspotify::model::Offset>| match offset {
+            None => Some(None),
+            Some(rspotify::model::Offset::Uri(uri)) => Some(Some(PlayingTrack::Uri(uri.clone()))),
+            Some(rspotify::model::Offset::Position(_)) => None, // unused here; Web API
+        };
+        let options = |playing_track| LoadRequestOptions {
+            start_playing: true,
+            seek_to: 0,
+            context_options: Some(LoadContextOptions::Options(Options {
+                shuffle: current.shuffle_state,
+                repeat: current.repeat_state == rspotify::model::RepeatState::Context,
+                repeat_track: current.repeat_state == rspotify::model::RepeatState::Track,
+            })),
+            playing_track,
+        };
+        let request = match playback {
+            Playback::Context(ContextId::Tracks(_), _) => return false,
+            Playback::Context(id, offset) => {
+                let Some(track) = playing_track(offset) else {
+                    return false;
+                };
+                LoadRequest::from_context_uri(id.uri(), options(track))
+            }
+            Playback::URIs(ids, offset) => {
+                let Some(track) = playing_track(offset) else {
+                    return false;
+                };
+                LoadRequest::from_tracks(ids.iter().map(Id::uri).collect(), options(track))
+            }
+        };
+        let conn = self.stream_conn.lock();
+        let Some(spirc) = conn.as_ref() else {
+            return false;
+        };
+        match spirc.load(request) {
+            Ok(()) => {
+                tracing::info!("Started the playback on the integrated player");
+                true
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Integrated player couldn't start the playback, using the Web API: {err:#}"
+                );
+                false
+            }
+        }
+    }
+
     /// Handle a player request, return a new playback metadata on success
     pub async fn handle_player_request(
         &self,
@@ -377,6 +705,10 @@ impl AppClient {
                 if let (Some(shuffle), Some(playback)) = (shuffle, playback.as_mut()) {
                     playback.shuffle_state = shuffle;
                 }
+                #[cfg(feature = "streaming")]
+                if self.try_integrated_start(&p, playback.as_ref()).await {
+                    return Ok(playback);
+                }
                 let device_id = playback.as_ref().and_then(|p| p.device_id.as_deref());
                 self.start_playback(p, device_id).await?;
                 // For some reasons, when starting a new playback, the integrated `spotify_player`
@@ -390,34 +722,64 @@ impl AppClient {
         }
 
         let mut playback = playback.context("no playback found")?;
-        let device_id = playback.device_id.as_deref();
 
+        // Setting the volume it already has (`+` at 100%, the desktop's media
+        // controls re-sending it) used to spend a rate-limited request each time.
+        if let PlayerRequest::Volume(volume) = request {
+            if playback.volume == Some(u32::from(volume)) && playback.mute_state.is_none() {
+                return Ok(Some(playback));
+            }
+        }
+
+        // Music playing in this app: control librespot directly (not rate limited).
+        #[cfg(feature = "streaming")]
+        let local = self.try_integrated_player(&request, &playback).await;
+        #[cfg(not(feature = "streaming"))]
+        let local = false;
+
+        let device_id = playback.device_id.as_deref();
         match request {
-            PlayerRequest::NextTrack => self.next_track(device_id).await?,
-            PlayerRequest::PreviousTrack => self.previous_track(device_id).await?,
+            PlayerRequest::NextTrack => {
+                if !local {
+                    self.next_track(device_id).await?;
+                }
+            }
+            PlayerRequest::PreviousTrack => {
+                if !local {
+                    self.previous_track(device_id).await?;
+                }
+            }
             PlayerRequest::Resume => {
                 if !playback.is_playing {
-                    self.resume_playback(device_id, None).await?;
+                    if !local {
+                        self.resume_playback(device_id, None).await?;
+                    }
                     playback.is_playing = true;
                 }
             }
 
             PlayerRequest::Pause => {
                 if playback.is_playing {
-                    self.pause_playback(device_id).await?;
+                    if !local {
+                        self.pause_playback(device_id).await?;
+                    }
                     playback.is_playing = false;
                 }
             }
             PlayerRequest::ResumePause => {
-                if playback.is_playing {
-                    self.pause_playback(device_id).await?;
-                } else {
-                    self.resume_playback(device_id, None).await?;
+                if !local {
+                    if playback.is_playing {
+                        self.pause_playback(device_id).await?;
+                    } else {
+                        self.resume_playback(device_id, None).await?;
+                    }
                 }
                 playback.is_playing = !playback.is_playing;
             }
             PlayerRequest::SeekTrack(position_ms) => {
-                self.seek_track(position_ms, device_id).await?;
+                if !local {
+                    self.seek_track(position_ms, device_id).await?;
+                }
             }
             PlayerRequest::Repeat => {
                 let next_repeat_state = match playback.repeat_state {
@@ -431,12 +793,16 @@ impl AppClient {
                 playback.repeat_state = next_repeat_state;
             }
             PlayerRequest::Shuffle => {
-                self.shuffle(!playback.shuffle_state, device_id).await?;
+                if !local {
+                    self.shuffle(!playback.shuffle_state, device_id).await?;
+                }
 
                 playback.shuffle_state = !playback.shuffle_state;
             }
             PlayerRequest::Volume(volume) => {
-                self.volume(volume, device_id).await?;
+                if !local {
+                    self.volume(volume, device_id).await?;
+                }
 
                 playback.volume = Some(u32::from(volume));
                 playback.mute_state = None;
@@ -444,11 +810,15 @@ impl AppClient {
             PlayerRequest::ToggleMute => {
                 let new_mute_state = match playback.mute_state {
                     None => {
-                        self.volume(0, device_id).await?;
+                        if !local {
+                            self.volume(0, device_id).await?;
+                        }
                         Some(playback.volume.unwrap_or_default())
                     }
                     Some(volume) => {
-                        self.volume(volume as u8, device_id).await?;
+                        if !local {
+                            self.volume(volume as u8, device_id).await?;
+                        }
                         None
                     }
                 };
@@ -499,6 +869,14 @@ impl AppClient {
                         .lyrics
                         .insert(uri, lyrics, *TTL_CACHE_DURATION);
                 }
+            }
+            #[cfg(feature = "streaming")]
+            ClientRequest::GetLocalQueue => {
+                self.refresh_local_queue(state).await;
+            }
+            #[cfg(feature = "streaming")]
+            ClientRequest::EditLocalQueue(edit) => {
+                self.edit_local_queue(state, edit).await?;
             }
             #[cfg(feature = "streaming")]
             ClientRequest::RestartIntegratedClient => {
@@ -648,7 +1026,14 @@ impl AppClient {
             },
 
             ClientRequest::AddPlayableToQueue(playable_id) => {
-                self.add_item_to_queue(playable_id, None).await?;
+                // playing here: queue it on librespot (not rate limited)
+                #[cfg(feature = "streaming")]
+                let queued_here = self.local_queue_add(state, &playable_id.uri()).await;
+                #[cfg(not(feature = "streaming"))]
+                let queued_here = false;
+                if !queued_here {
+                    self.add_item_to_queue(playable_id, None).await?;
+                }
             }
             ClientRequest::AddPlayableToPlaylist(playlist_id, playable_id) => {
                 self.add_item_to_playlist(state, playlist_id, playable_id)
@@ -761,13 +1146,35 @@ impl AppClient {
         // Q: Why do we need more than one request to update the playback?
         // A: It might take a while for Spotify server to reflect the new change,
         // making additional requests can help ensure that the playback state is always up-to-date.
+        //
+        // Refreshes are merged: every command and player event asks for one,
+        // and a burst of key presses used to send 2 requests each, spending
+        // the rate limit so the next command failed. Now one refresher runs at
+        // a time and repeats only if more were asked for meanwhile.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static RUNNING: AtomicBool = AtomicBool::new(false);
+        static WANTED: AtomicBool = AtomicBool::new(false);
+
+        WANTED.store(true, Ordering::SeqCst);
+        if RUNNING.swap(true, Ordering::SeqCst) {
+            return; // the running refresher will pick it up
+        }
         let client = self.clone();
         let state = state.clone();
         tokio::task::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            let _ = client.retrieve_current_playback(&state, false).await;
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let _ = client.retrieve_current_playback(&state, false).await;
+            loop {
+                while WANTED.swap(false, Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    let _ = client.retrieve_current_playback(&state, false).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    let _ = client.retrieve_current_playback(&state, false).await;
+                }
+                RUNNING.store(false, Ordering::SeqCst);
+                // asked again between the last check and stopping?
+                if !WANTED.load(Ordering::SeqCst) || RUNNING.swap(true, Ordering::SeqCst) {
+                    break;
+                }
+            }
         });
     }
 
@@ -1132,26 +1539,16 @@ impl AppClient {
 
     /// Search for items (tracks, artists, albums, playlists) matching a given query
     pub async fn search(&self, query: &str) -> Result<SearchResults> {
-        use rspotify::model::SearchType;
-
-        let result = self
-            .deref()
-            .search_multiple(
-                query,
-                [
-                    SearchType::Track,
-                    SearchType::Artist,
-                    SearchType::Album,
-                    SearchType::Playlist,
-                    SearchType::Show,
-                    SearchType::Episode,
-                ],
-                None,
-                None,
-                Some(10),
-                None,
-            )
-            .await?;
+        // One request for every type, decoded here rather than by rspotify:
+        // Spotify sends nulls its models reject (see `parse_search_result`),
+        // and a single one used to fail the whole search.
+        let params = Query::from([
+            ("q", query),
+            ("type", "track,artist,album,playlist,show,episode"),
+            ("limit", "10"),
+        ]);
+        let raw = self.deref().api_get("search", &params).await?;
+        let result = parse_search_result(&raw)?;
 
         let tracks = result
             .tracks
@@ -1973,6 +2370,40 @@ impl AppClient {
 
     /// Retrieve an image from a `url` or a cached `path`.
     /// If `saved` is specified, the retrieved image is saved to the cached `path`.
+    /// Download a cover into the image cache (for the integrated player's
+    /// now-playing display, which doesn't wait for the Web API).
+    #[cfg(feature = "streaming")]
+    pub async fn load_cover_image(&self, state: &SharedState, url: &str) -> Result<()> {
+        #[cfg(feature = "image")]
+        {
+            if state.data.read().caches.images.contains_key(url) {
+                return Ok(());
+            }
+            let name: String = url
+                .rsplit('/')
+                .next()
+                .unwrap_or("cover")
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect();
+            let path = config::get_config()
+                .cache_folder
+                .join("image")
+                .join(format!("{name}.jpg"));
+            let bytes = self.retrieve_image(url, &path, false).await?;
+            let image = image::load_from_memory(&bytes).context("decode the cover image")?;
+            state
+                .data
+                .write()
+                .caches
+                .images
+                .insert(url.to_owned(), image, *TTL_CACHE_DURATION);
+        }
+        #[cfg(not(feature = "image"))]
+        let _ = (state, url);
+        Ok(())
+    }
+
     async fn retrieve_image(
         &self,
         url: &str,
@@ -2041,6 +2472,30 @@ impl AppClient {
 fn move_seed_track_to_front(tracks: &mut Vec<Track>, seed_track: Track) {
     tracks.retain(|track| track.id != seed_track.id);
     tracks.insert(0, seed_track);
+}
+
+/// Decode a search response, first patching the nulls Spotify sends that
+/// rspotify's models don't accept: an episode's `is_externally_hosted`
+/// (a podcast in the results made every search fail) and null entries in a
+/// result list.
+fn parse_search_result(raw: &str) -> Result<rspotify::model::SearchMultipleResult> {
+    let mut value: serde_json::Value = serde_json::from_str(raw).context("search response")?;
+    if let Some(pages) = value.as_object_mut() {
+        for page in pages.values_mut() {
+            let Some(items) = page.get_mut("items").and_then(|i| i.as_array_mut()) else {
+                continue;
+            };
+            items.retain(|item| !item.is_null());
+            for item in items.iter_mut() {
+                if let Some(field) = item.get_mut("is_externally_hosted") {
+                    if field.is_null() {
+                        *field = serde_json::Value::Bool(false);
+                    }
+                }
+            }
+        }
+    }
+    serde_json::from_value(value).context("search response")
 }
 
 #[cfg(test)]
@@ -2138,5 +2593,103 @@ mod tests {
             .unwrap();
 
         assert!(matches!(playback.item, Some(PlayableItem::Track(_))));
+    }
+}
+
+#[cfg(test)]
+mod search_parse_tests {
+    use super::parse_search_result;
+
+    // A real response, trimmed: Spotify sends `"is_externally_hosted": null`
+    // on episodes and null entries in `items`, which used to fail the search.
+    #[test]
+    fn search_survives_spotify_nulls() {
+        let raw = include_str!("testdata/search_nulls.json");
+        let result = parse_search_result(raw).expect("parses");
+        let tracks = result.tracks.expect("tracks").items;
+        assert_eq!(tracks.len(), 1, "null entry dropped");
+        let episodes = result.episodes.expect("episodes").items;
+        assert_eq!(episodes.len(), 1);
+        assert!(!episodes[0].is_externally_hosted);
+    }
+
+    #[test]
+    fn rspotify_alone_rejects_it() {
+        // documents why parse_search_result exists
+        let raw = include_str!("testdata/search_nulls.json");
+        assert!(serde_json::from_str::<rspotify::model::SearchMultipleResult>(raw).is_err());
+    }
+}
+
+/// A volume percentage as librespot's 0..=65535 scale (the Web API's
+/// `volume_percent` maps to the same range on the device).
+#[cfg(feature = "streaming")]
+fn librespot_volume(percent: u8) -> u16 {
+    (u32::from(percent.min(100)) * u32::from(u16::MAX) / 100) as u16
+}
+
+#[cfg(all(test, feature = "streaming"))]
+mod integrated_player_tests {
+    use super::librespot_volume;
+
+    #[test]
+    fn volume_scale() {
+        assert_eq!(librespot_volume(0), 0);
+        assert_eq!(librespot_volume(50), 32767);
+        assert_eq!(librespot_volume(100), u16::MAX);
+        assert_eq!(librespot_volume(250), u16::MAX); // clamped
+    }
+}
+
+/// Apply a queue edit to the app's copy of the queue (librespot applies the
+/// same edit to its own).
+#[cfg(feature = "streaming")]
+fn apply_queue_edit(queue: &mut Vec<crate::state::LocalQueueItem>, edit: &QueueEdit) {
+    match *edit {
+        QueueEdit::Remove(i) if i < queue.len() => {
+            queue.remove(i);
+        }
+        QueueEdit::Move { from, to } if from < queue.len() && to < queue.len() => {
+            let item = queue.remove(from);
+            queue.insert(to, item);
+        }
+        QueueEdit::Play(i) if i < queue.len() => {
+            queue.drain(..=i);
+        }
+        _ => {}
+    }
+}
+
+#[cfg(all(test, feature = "streaming"))]
+mod queue_edit_tests {
+    use super::{apply_queue_edit, QueueEdit};
+    use crate::state::LocalQueueItem;
+
+    fn queue(uris: &[&str]) -> Vec<LocalQueueItem> {
+        uris.iter()
+            .map(|u| LocalQueueItem {
+                uri: (*u).to_string(),
+                queued: false,
+            })
+            .collect()
+    }
+
+    fn uris(q: &[LocalQueueItem]) -> Vec<&str> {
+        q.iter().map(|i| i.uri.as_str()).collect()
+    }
+
+    #[test]
+    fn edits() {
+        let mut q = queue(&["a", "b", "c", "d"]);
+        apply_queue_edit(&mut q, &QueueEdit::Move { from: 0, to: 2 });
+        assert_eq!(uris(&q), ["b", "c", "a", "d"]);
+        apply_queue_edit(&mut q, &QueueEdit::Remove(1));
+        assert_eq!(uris(&q), ["b", "a", "d"]);
+        apply_queue_edit(&mut q, &QueueEdit::Play(1)); // "a" plays; "d" is next
+        assert_eq!(uris(&q), ["d"]);
+        // out of range: nothing happens
+        apply_queue_edit(&mut q, &QueueEdit::Remove(5));
+        apply_queue_edit(&mut q, &QueueEdit::Move { from: 0, to: 3 });
+        assert_eq!(uris(&q), ["d"]);
     }
 }

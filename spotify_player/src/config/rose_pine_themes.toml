@@ -1,0 +1,127 @@
+# Rosé Pine (https://rosepinetheme.com/palette), built in.
+# No background colour: the terminal's own background shows through.
+# ANSI slots follow Rosé Pine's terminal ports:
+# black=overlay red=love green=pine yellow=gold blue=foam magenta=iris cyan=rose white=text
+
+[[themes]]
+name = "rose-pine"
+[themes.palette]
+foreground = "#e0def4"
+black = "#26233a"
+red = "#eb6f92"
+green = "#31748f"
+yellow = "#f6c177"
+blue = "#9ccfd8"
+magenta = "#c4a7e7"
+cyan = "#ebbcba"
+white = "#e0def4"
+bright_black = "#6e6a86"
+bright_red = "#eb6f92"
+bright_green = "#31748f"
+bright_yellow = "#f6c177"
+bright_blue = "#9ccfd8"
+bright_magenta = "#c4a7e7"
+bright_cyan = "#ebbcba"
+bright_white = "#e0def4"
+[themes.component_style]
+block_title = { fg = "#c4a7e7", modifiers = ["Bold"] }
+border = { fg = "#403d52" }
+selection = { fg = "#e0def4", bg = "#403d52", modifiers = ["Bold"] }
+playback_status = { fg = "#ebbcba", modifiers = ["Bold"] }
+playback_track = { fg = "#e0def4", modifiers = ["Bold"] }
+playback_artists = { fg = "#ebbcba" }
+playback_album = { fg = "#c4a7e7", modifiers = ["Italic"] }
+playback_genres = { fg = "#6e6a86" }
+playback_metadata = { fg = "#9ccfd8" }
+playback_progress_bar = { fg = "#ebbcba" }
+playback_progress_bar_unfilled = { fg = "#403d52" }
+current_playing = { fg = "#f6c177", modifiers = ["Bold"] }
+page_desc = { fg = "#c4a7e7", modifiers = ["Bold"] }
+playlist_desc = { fg = "#6e6a86" }
+table_header = { fg = "#f6c177", modifiers = ["Bold"] }
+like = { fg = "#eb6f92" }
+lyrics_played = { fg = "#6e6a86" }
+lyrics_playing = { fg = "#f6c177", modifiers = ["Bold"] }
+visualization = { low = "#9ccfd8", mid = "#c4a7e7", high = "#eb6f92" }
+
+[[themes]]
+name = "rose-pine-moon"
+[themes.palette]
+foreground = "#e0def4"
+black = "#393552"
+red = "#eb6f92"
+green = "#3e8fb0"
+yellow = "#f6c177"
+blue = "#9ccfd8"
+magenta = "#c4a7e7"
+cyan = "#ea9a97"
+white = "#e0def4"
+bright_black = "#6e6a86"
+bright_red = "#eb6f92"
+bright_green = "#3e8fb0"
+bright_yellow = "#f6c177"
+bright_blue = "#9ccfd8"
+bright_magenta = "#c4a7e7"
+bright_cyan = "#ea9a97"
+bright_white = "#e0def4"
+[themes.component_style]
+block_title = { fg = "#c4a7e7", modifiers = ["Bold"] }
+border = { fg = "#44415a" }
+selection = { fg = "#e0def4", bg = "#44415a", modifiers = ["Bold"] }
+playback_status = { fg = "#ea9a97", modifiers = ["Bold"] }
+playback_track = { fg = "#e0def4", modifiers = ["Bold"] }
+playback_artists = { fg = "#ea9a97" }
+playback_album = { fg = "#c4a7e7", modifiers = ["Italic"] }
+playback_genres = { fg = "#6e6a86" }
+playback_metadata = { fg = "#9ccfd8" }
+playback_progress_bar = { fg = "#ea9a97" }
+playback_progress_bar_unfilled = { fg = "#44415a" }
+current_playing = { fg = "#f6c177", modifiers = ["Bold"] }
+page_desc = { fg = "#c4a7e7", modifiers = ["Bold"] }
+playlist_desc = { fg = "#6e6a86" }
+table_header = { fg = "#f6c177", modifiers = ["Bold"] }
+like = { fg = "#eb6f92" }
+lyrics_played = { fg = "#6e6a86" }
+lyrics_playing = { fg = "#f6c177", modifiers = ["Bold"] }
+visualization = { low = "#9ccfd8", mid = "#c4a7e7", high = "#eb6f92" }
+
+[[themes]]
+name = "rose-pine-dawn"
+[themes.palette]
+foreground = "#464261"
+black = "#f2e9e1"
+red = "#b4637a"
+green = "#286983"
+yellow = "#ea9d34"
+blue = "#56949f"
+magenta = "#907aa9"
+cyan = "#d7827e"
+white = "#464261"
+bright_black = "#9893a5"
+bright_red = "#b4637a"
+bright_green = "#286983"
+bright_yellow = "#ea9d34"
+bright_blue = "#56949f"
+bright_magenta = "#907aa9"
+bright_cyan = "#d7827e"
+bright_white = "#464261"
+[themes.component_style]
+block_title = { fg = "#907aa9", modifiers = ["Bold"] }
+border = { fg = "#dfdad9" }
+selection = { fg = "#464261", bg = "#dfdad9", modifiers = ["Bold"] }
+playback_status = { fg = "#d7827e", modifiers = ["Bold"] }
+playback_track = { fg = "#464261", modifiers = ["Bold"] }
+playback_artists = { fg = "#d7827e" }
+playback_album = { fg = "#907aa9", modifiers = ["Italic"] }
+playback_genres = { fg = "#9893a5" }
+playback_metadata = { fg = "#56949f" }
+playback_progress_bar = { fg = "#d7827e" }
+playback_progress_bar_unfilled = { fg = "#dfdad9" }
+current_playing = { fg = "#b4637a", modifiers = ["Bold"] }
+page_desc = { fg = "#907aa9", modifiers = ["Bold"] }
+playlist_desc = { fg = "#9893a5" }
+table_header = { fg = "#ea9d34", modifiers = ["Bold"] }
+like = { fg = "#b4637a" }
+lyrics_played = { fg = "#9893a5" }
+lyrics_playing = { fg = "#b4637a", modifiers = ["Bold"] }
+visualization = { low = "#56949f", mid = "#907aa9", high = "#b4637a" }

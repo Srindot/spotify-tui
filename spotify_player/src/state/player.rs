@@ -23,6 +23,61 @@ pub struct PlayerState {
     /// Active when the integrated librespot player is streaming and the user
     /// started playback from a track-table context.
     pub custom_queue: Option<CustomQueue>,
+
+    /// What the integrated player (librespot) is playing, straight from its
+    /// events. The Web API's view (`playback`) can lag seconds behind, or not
+    /// update at all while requests are rate limited; the now-playing display
+    /// prefers this one.
+    pub local: Option<LocalNowPlaying>,
+
+    /// What's coming up on the integrated player, straight from librespot
+    /// (editable: remove, move, play from). `None` when not playing here.
+    pub local_queue: Option<Vec<LocalQueueItem>>,
+    /// Names for queue entries (librespot only gives uris), by uri.
+    pub queue_names: std::collections::HashMap<String, QueueName>,
+}
+
+/// An upcoming track on the integrated player.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalQueueItem {
+    pub uri: String,
+    /// added with "add to queue" (not just the next song of the playlist)
+    pub queued: bool,
+}
+
+/// The display name of a queued track.
+#[derive(Clone, Debug)]
+pub struct QueueName {
+    pub name: String,
+    pub artists: String,
+    pub duration: chrono::Duration,
+}
+
+/// The integrated player's current track and position.
+#[derive(Clone, Debug)]
+pub struct LocalNowPlaying {
+    pub uri: String,
+    pub name: String,
+    pub artists: String,
+    pub album: String,
+    pub cover_url: Option<String>,
+    pub duration: chrono::Duration,
+    pub is_playing: bool,
+    /// the position at `updated_at`
+    pub position: chrono::Duration,
+    pub updated_at: std::time::Instant,
+}
+
+impl LocalNowPlaying {
+    /// The position now, advancing while it plays.
+    pub fn progress(&self) -> chrono::Duration {
+        let elapsed = if self.is_playing {
+            chrono::Duration::from_std(self.updated_at.elapsed()).unwrap_or_default()
+        } else {
+            chrono::Duration::zero()
+        };
+        (self.position + elapsed).clamp(chrono::Duration::zero(), self.duration)
+    }
 }
 
 impl PlayerState {
@@ -112,5 +167,34 @@ impl PlayerState {
             },
             None => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod local_now_playing_tests {
+    use super::LocalNowPlaying;
+    use std::time::{Duration, Instant};
+
+    fn local(is_playing: bool, position_s: i64, ago: Duration) -> LocalNowPlaying {
+        LocalNowPlaying {
+            uri: "spotify:track:x".into(),
+            name: "Nights".into(),
+            artists: "Frank Ocean".into(),
+            album: "Blonde".into(),
+            cover_url: None,
+            duration: chrono::Duration::seconds(307),
+            is_playing,
+            position: chrono::Duration::seconds(position_s),
+            updated_at: Instant::now() - ago,
+        }
+    }
+
+    #[test]
+    fn progress_advances_only_while_playing() {
+        let ten = Duration::from_secs(10);
+        assert_eq!(local(true, 60, ten).progress().num_seconds(), 70);
+        assert_eq!(local(false, 60, ten).progress().num_seconds(), 60);
+        // never past the end
+        assert_eq!(local(true, 300, ten).progress().num_seconds(), 307);
     }
 }

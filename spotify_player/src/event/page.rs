@@ -28,7 +28,7 @@ pub fn handle_key_sequence_for_page(
             PageType::Browse => handle_command_for_browse_page(command, client_pub, ui, state),
             // lyrics page doesn't support any commands
             PageType::Lyrics => Ok(false),
-            PageType::Queue => Ok(handle_command_for_queue_page(command, ui)),
+            PageType::Queue => handle_command_for_queue_page(command, client_pub, state, ui),
             PageType::CommandHelp => Ok(handle_command_for_command_help_page(command, ui)),
             PageType::Logs => Ok(handle_command_for_logs_page(command, ui)),
         },
@@ -39,6 +39,13 @@ pub fn handle_key_sequence_for_page(
                 window::handle_action_for_focused_context_page(action, client_pub, ui, state)
             }
             PageType::Browse => handle_action_for_browse_page(action, client_pub, ui, state),
+            // `X` (delete from the list you're in) removes from the queue
+            #[cfg(feature = "streaming")]
+            PageType::Queue if matches!(action, Action::DeleteFromPlaylist) => {
+                edit_selected_queue_item(client_pub, state, ui, |i, _| {
+                    Some(crate::client::QueueEdit::Remove(i))
+                })
+            }
             _ => Ok(false),
         },
         _ => Ok(false),
@@ -57,6 +64,7 @@ fn handle_action_for_library_page(
         _ => anyhow::bail!("expect a library page state"),
     };
     match focus_state {
+        LibraryFocusState::Menu => Ok(false),
         LibraryFocusState::Playlists => window::handle_action_for_selected_item(
             action,
             &ui.search_filtered_items(&data.user_data.folder_playlists_items(folder_id))
@@ -157,7 +165,56 @@ fn handle_command_for_library_page(
             .sort_by_key(|a| std::cmp::Reverse(a.added_at));
     }
 
+    // The sidebar is one column: moving past the end of the menu goes into
+    // the playlists, and up from the first playlist back into the menu.
+    let selected = ui.current_page_mut().selected().unwrap_or(0);
+    let n_playlists = {
+        let data = state.data.read();
+        ui.search_filtered_items(&data.user_data.folder_playlists_items(folder_id))
+            .len()
+    };
+    if let PageState::Library { state: page_state } = ui.current_page_mut() {
+        match (focus_state, command) {
+            (LibraryFocusState::Menu, Command::SelectNextOrScrollDown)
+                if selected + 1 >= LIBRARY_MENU.len() && n_playlists > 0 =>
+            {
+                page_state.focus = LibraryFocusState::Playlists;
+                page_state.playlist_list.select(Some(0));
+                return Ok(true);
+            }
+            (LibraryFocusState::Playlists, Command::SelectPreviousOrScrollUp) if selected == 0 => {
+                page_state.focus = LibraryFocusState::Menu;
+                page_state.menu_list.select(Some(LIBRARY_MENU.len() - 1));
+                return Ok(true);
+            }
+            _ => {}
+        }
+    }
+
     match focus_state {
+        LibraryFocusState::Menu => {
+            let id = selected.min(LIBRARY_MENU.len() - 1);
+            let count = ui.count_prefix;
+            if handle_navigation_command(
+                command,
+                ui.current_page_mut(),
+                id,
+                LIBRARY_MENU.len(),
+                count,
+            ) {
+                return Ok(true);
+            }
+            if command == Command::ChooseSelected {
+                return super::handle_global_command(
+                    LIBRARY_MENU[id].command,
+                    client_pub,
+                    state,
+                    ui,
+                    None,
+                );
+            }
+            Ok(false)
+        }
         LibraryFocusState::Playlists => {
             let data = state.data.read();
             Ok(window::handle_command_for_playlist_list_window(
@@ -558,13 +615,78 @@ fn handle_command_for_browse_page(
     Ok(true)
 }
 
-fn handle_command_for_queue_page(command: Command, ui: &mut UIStateGuard) -> bool {
+fn handle_command_for_queue_page(
+    command: Command,
+    client_pub: &flume::Sender<ClientRequest>,
+    state: &SharedState,
+    ui: &mut UIStateGuard,
+) -> Result<bool> {
     let scroll_offset = match ui.current_page() {
         PageState::Queue { scroll_offset } => *scroll_offset,
-        _ => return false,
+        _ => return Ok(false),
     };
     let count = ui.count_prefix;
-    handle_navigation_command(command, ui.current_page_mut(), scroll_offset, 10000, count)
+
+    // playing here: the queue is editable, and `scroll_offset` is the selection
+    #[cfg(feature = "streaming")]
+    if let Some(len) = state.player.read().local_queue.as_ref().map(Vec::len) {
+        use crate::client::QueueEdit;
+        if handle_navigation_command(command, ui.current_page_mut(), scroll_offset, len, count) {
+            return Ok(true);
+        }
+        let edit: fn(usize, usize) -> Option<QueueEdit> = match command {
+            Command::ChooseSelected => |i, _| Some(QueueEdit::Play(i)),
+            Command::MovePlaylistItemUp => {
+                |i, _| (i > 0).then(|| QueueEdit::Move { from: i, to: i - 1 })
+            }
+            Command::MovePlaylistItemDown => {
+                |i, len| (i + 1 < len).then_some(QueueEdit::Move { from: i, to: i + 1 })
+            }
+            _ => return Ok(false),
+        };
+        return edit_selected_queue_item(client_pub, state, ui, edit);
+    }
+    #[cfg(not(feature = "streaming"))]
+    let _ = (client_pub, state);
+
+    Ok(handle_navigation_command(
+        command,
+        ui.current_page_mut(),
+        scroll_offset,
+        10000,
+        count,
+    ))
+}
+
+/// Edit the selected queue entry (`edit` gets its index and the queue's
+/// length), keeping the selection on the moved entry.
+#[cfg(feature = "streaming")]
+fn edit_selected_queue_item(
+    client_pub: &flume::Sender<ClientRequest>,
+    state: &SharedState,
+    ui: &mut UIStateGuard,
+    edit: impl FnOnce(usize, usize) -> Option<crate::client::QueueEdit>,
+) -> Result<bool> {
+    use crate::client::QueueEdit;
+    let Some(len) = state.player.read().local_queue.as_ref().map(Vec::len) else {
+        return Ok(false);
+    };
+    let PageState::Queue { scroll_offset } = ui.current_page_mut() else {
+        return Ok(false);
+    };
+    if *scroll_offset >= len {
+        return Ok(true);
+    }
+    let Some(edit) = edit(*scroll_offset, len) else {
+        return Ok(true);
+    };
+    match edit {
+        QueueEdit::Move { to, .. } => *scroll_offset = to,
+        QueueEdit::Play(_) => *scroll_offset = 0,
+        QueueEdit::Remove(_) => *scroll_offset = (*scroll_offset).min(len.saturating_sub(2)),
+    }
+    client_pub.send(ClientRequest::EditLocalQueue(edit))?;
+    Ok(true)
 }
 
 fn handle_command_for_command_help_page(command: Command, ui: &mut UIStateGuard) -> bool {

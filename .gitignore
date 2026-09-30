@@ -26,3 +26,5 @@ NOTES*
 .idea
 
 *.DS_Store
+# reference repos (rose-pine-theme, ...)
+resources/
