@@ -369,30 +369,43 @@ fn handle_key_sequence_for_search_popup(
     state: &SharedState,
     ui: &mut UIStateGuard,
 ) -> Result<bool> {
-    // handle user's input that updates the search query
-    let Some(PopupState::Search { ref mut query }) = &mut ui.popup else {
+    // Vim style: while typing, keys edit the filter (arrows and ctrl+n/p
+    // still move); `enter` stops typing and keeps the filtered list, where
+    // j/k move, enter plays and the usual actions work; `/` edits the
+    // filter again, esc clears it.
+    let Some(PopupState::Search {
+        ref mut query,
+        ref mut typing,
+    }) = &mut ui.popup
+    else {
         return Ok(false);
     };
-    if key_sequence.keys.len() == 1 {
-        if let Key::None(c) = key_sequence.keys[0] {
-            match c {
-                crossterm::event::KeyCode::Char(c) => {
-                    query.push(c);
-                    ui.current_page_mut().select(0);
-                    return Ok(true);
-                }
-                crossterm::event::KeyCode::Backspace => {
-                    if query.is_empty() {
-                        // close search popup when user presses backspace on empty search
-                        ui.popup = None;
-                    } else {
-                        query.pop().unwrap();
-                        ui.current_page_mut().select(0);
-                    }
-                    return Ok(true);
-                }
-                _ => {}
+    if *typing && key_sequence.keys.len() == 1 {
+        match key_sequence.keys[0] {
+            Key::None(crossterm::event::KeyCode::Char(c)) => {
+                query.push(c);
+                ui.current_page_mut().select(0);
+                return Ok(true);
             }
+            Key::None(crossterm::event::KeyCode::Backspace) => {
+                if query.is_empty() {
+                    // close search popup when user presses backspace on empty search
+                    ui.popup = None;
+                } else {
+                    query.pop().unwrap();
+                    ui.current_page_mut().select(0);
+                }
+                return Ok(true);
+            }
+            Key::None(crossterm::event::KeyCode::Enter) => {
+                if query.is_empty() {
+                    ui.popup = None; // nothing typed: no filter
+                } else {
+                    *typing = false;
+                }
+                return Ok(true);
+            }
+            _ => {}
         }
     }
 

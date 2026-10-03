@@ -41,7 +41,11 @@ fn init_logging(
     // initialize the application's logging
     if std::env::var("RUST_LOG").is_err() {
         // default to log the current crate and librespot crates
-        std::env::set_var("RUST_LOG", "spotify_player=info,librespot=info");
+        // the binary's crate name (`spotify_tui`), which tags this app's logs
+        std::env::set_var(
+            "RUST_LOG",
+            concat!(env!("CARGO_CRATE_NAME"), "=info,librespot=info"),
+        );
     }
     if !log_folder.exists() {
         std::fs::create_dir_all(log_folder)?;

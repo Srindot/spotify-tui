@@ -9,6 +9,10 @@ fix for searches failing when podcast episodes were in the results.
 Install from this repo: `make install` (the `spotify_tui` command, plus a launcher for
 rofi and app menus that opens it in kitty; `make install TERMINAL=alacritty` for
 another terminal). Settings stay in `~/.config/spotify-player`.
+On networks that block Spotify's streaming port (4070), e.g. campus or office
+firewalls, it falls back to port 443 after 10 seconds; set `ap_port = 443` in
+`app.toml` to connect straight away.
+
 Everything below is the original project's documentation.
 
 # spotify_player

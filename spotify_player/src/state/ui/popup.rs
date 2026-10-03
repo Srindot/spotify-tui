@@ -19,6 +19,8 @@ pub enum PlaylistCreateCurrentField {
 pub enum PopupState {
     Search {
         query: String,
+        /// typing the filter; `enter` stops, then keys go to the list
+        typing: bool,
     },
     UserPlaylistList(PlaylistPopupAction, ListState),
     UserFollowedArtistList(ListState),

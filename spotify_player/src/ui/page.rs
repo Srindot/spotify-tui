@@ -83,12 +83,27 @@ pub fn render_search_page(
     };
     let rect = chunks[1];
 
+    let hint = if focus_state == SearchFocusState::Input {
+        "enter search · esc back"
+    } else {
+        "j/k move · tab next box · enter play · L like · P add to playlist · Z queue · S edit search"
+    };
+    let [input_rect, hint_rect] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length((hint.chars().count() as u16 + 1).min(search_input_rect.width / 2 + 20)),
+    ])
+    .areas(search_input_rect);
+    frame.render_widget(
+        Paragraph::new(ratatui::text::Span::styled(hint, ui.theme.playlist_desc()))
+            .alignment(Alignment::Right),
+        hint_rect,
+    );
     let PageState::Search { line_input, .. } = ui.current_page_mut() else {
         return;
     };
     frame.render_widget(
         line_input.widget(is_active && focus_state == SearchFocusState::Input),
-        search_input_rect,
+        input_rect,
     );
 
     if let Some(status) = status {
@@ -173,18 +188,29 @@ pub fn render_search_page(
 
     // 3. Construct the page's widgets
     let (track_list, n_tracks) = {
-        let track_items = search_results
-            .map(|s| search_items(&s.tracks))
-            .unwrap_or_default();
-
+        // a heart on the songs you've liked
+        let liked_icon = &config::get_config().app_config.liked_icon;
+        let tracks = search_results.map(|s| &s.tracks[..]).unwrap_or_default();
+        let items: Vec<ratatui::widgets::ListItem> = tracks
+            .iter()
+            .map(|t| {
+                let mark = if data.user_data.is_liked_track(t) {
+                    ratatui::text::Span::styled(format!("{liked_icon} "), ui.theme.like())
+                } else {
+                    ratatui::text::Span::raw(" ".repeat(liked_icon.chars().count() + 1))
+                };
+                ratatui::widgets::ListItem::new(Line::from(vec![
+                    mark,
+                    ratatui::text::Span::raw(to_bidi_string(&t.to_string())),
+                ]))
+            })
+            .collect();
         let is_active = is_active && focus_state == SearchFocusState::Tracks;
-        let selected_index = if is_active {
-            ui.current_page_mut().selected()
-        } else {
-            None
-        };
-
-        utils::construct_list_widget(&ui.theme, track_items, is_active, selected_index)
+        let n = items.len();
+        (
+            ratatui::widgets::List::new(items).highlight_style(ui.theme.selection(is_active)),
+            n,
+        )
     };
 
     let (album_list, n_albums) = {

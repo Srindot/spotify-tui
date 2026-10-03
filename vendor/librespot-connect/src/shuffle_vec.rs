@@ -146,6 +146,20 @@ mod test {
         );
     }
 
+    // spotify-tui: shuffle off must restore the order also when shuffle
+    // kept the current track first (as the player does)
+    #[test]
+    fn test_unshuffle_with_first() {
+        let (base_vec, seed) = base(0..50);
+        for first in [0, 17, 49] {
+            let mut vec = base_vec.clone();
+            vec.shuffle_with_seed(seed, |i| i == &first);
+            assert_eq!(vec.first(), Some(&first));
+            vec.unshuffle();
+            assert_eq!(vec, base_vec, "original order back (first = {first})");
+        }
+    }
+
     #[test]
     fn test_shuffle_with_first() {
         const MAX_RANGE: usize = 200;

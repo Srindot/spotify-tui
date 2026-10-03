@@ -282,6 +282,11 @@ fn handle_key_sequence_for_search_page(
                                 return Err(err.into());
                             }
                         }
+                        // go to the results, so j/k move and enter plays
+                        if let PageState::Search { state, .. } = ui.current_page_mut() {
+                            state.focus = SearchFocusState::Tracks;
+                            state.track_list.select(Some(0));
+                        }
                     }
                     Ok(true)
                 }
@@ -310,6 +315,16 @@ fn handle_key_sequence_for_search_page(
     else {
         return Ok(false);
     };
+
+    // in the results: `S` or `i` goes back to the search box
+    let back_to_input = matches!(found_keymap, CommandOrAction::Command(Command::SearchPage))
+        || key_sequence.keys == [Key::None(crossterm::event::KeyCode::Char('i'))];
+    if back_to_input {
+        if let PageState::Search { state, .. } = ui.current_page_mut() {
+            state.focus = SearchFocusState::Input;
+        }
+        return Ok(true);
+    }
 
     let data = state.data.read();
     let search_results = data.caches.search_results(current_query);

@@ -2,8 +2,8 @@ use crate::{command::Command, utils::filtered_items_from_query};
 
 use super::{
     config, utils, utils::construct_and_render_block, Borders, Cell, Constraint, Frame, Layout,
-    Paragraph, PlaylistCreateCurrentField, PlaylistPopupAction, PopupState, Rect, Row, SharedState,
-    Table, UIStateGuard,
+    Line, Paragraph, PlaylistCreateCurrentField, PlaylistPopupAction, PopupState, Rect, Row,
+    SharedState, Span, Table, UIStateGuard,
 };
 
 const SHORTCUT_TABLE_N_COLUMNS: usize = 3;
@@ -62,14 +62,28 @@ pub fn render_popup(
                 );
                 (chunks[0], true)
             }
-            PopupState::Search { query } => {
+            PopupState::Search { query, typing } => {
                 let chunks =
                     Layout::vertical([Constraint::Fill(0), Constraint::Length(3)]).split(rect);
 
                 let rect =
-                    construct_and_render_block("Search", &ui.theme, Borders::ALL, frame, chunks[1]);
+                    construct_and_render_block("Filter", &ui.theme, Borders::ALL, frame, chunks[1]);
 
-                frame.render_widget(Paragraph::new(format!("/{query}")), rect);
+                let (cursor, hint) = if *typing {
+                    ("▏", "   enter done · esc cancel")
+                } else {
+                    (
+                        "",
+                        "   j/k move · enter play · L like · P add to playlist · Z queue · / edit · esc clear",
+                    )
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(format!("/{query}{cursor}"), ui.theme.playback_track()),
+                        Span::styled(hint, ui.theme.playlist_desc()),
+                    ])),
+                    rect,
+                );
                 (chunks[0], true)
             }
             PopupState::ActionList(item, _) => {

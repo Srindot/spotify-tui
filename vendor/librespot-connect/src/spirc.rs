@@ -138,6 +138,7 @@ enum SpircCommand {
     QueueMove(usize, usize),
     QueuePlay(usize),
     QueueAdd(String),
+    IsActive(tokio::sync::oneshot::Sender<bool>),
 }
 
 const CONTEXT_FETCH_THRESHOLD: usize = 2;
@@ -394,6 +395,16 @@ impl Spirc {
     /// Does not overwrite the queue.
     pub fn load(&self, command: LoadRequest) -> Result<(), Error> {
         Ok(self.commands.send(SpircCommand::Load(command))?)
+    }
+
+    /// spotify-tui: whether we are the active device (commands are ignored
+    /// while not active, e.g. after reconnecting).
+    pub async fn is_active(&self) -> bool {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.commands.send(SpircCommand::IsActive(tx)).is_err() {
+            return false;
+        }
+        rx.await.unwrap_or(false)
     }
 
     /// spotify-tui: the upcoming tracks, `(uri, queued by the user)`.
@@ -702,6 +713,11 @@ impl SpircTask {
             }
             SpircCommand::Transfer(..) | SpircCommand::Activate => {
                 warn!("SpircCommand::{cmd:?} will be ignored while already active")
+            }
+            // spotify-tui
+            SpircCommand::IsActive(reply) => {
+                let _ = reply.send(self.connect_state.is_active());
+                return Ok(());
             }
             _ if !self.connect_state.is_active() => {
                 warn!("SpircCommand::{cmd:?} will be ignored while Not Active")

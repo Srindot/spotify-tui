@@ -462,11 +462,14 @@ fn now_playing(state: &SharedState) -> Option<NowPlaying> {
     };
     if let Some(p) = &player.buffered_playback {
         if p.shuffle_state {
-            np.details.push("shuffle".to_string());
+            np.details.push("⇄ shuffle".to_string());
         }
-        let repeat = <&'static str>::from(p.repeat_state);
-        if repeat != "off" {
-            np.details.push(format!("repeat {repeat}"));
+        match p.repeat_state {
+            rspotify::model::RepeatState::Track => np.details.push("↻¹ repeat song".to_string()),
+            rspotify::model::RepeatState::Context => {
+                np.details.push("↻ repeat playlist".to_string());
+            }
+            rspotify::model::RepeatState::Off => {}
         }
         match p.mute_state {
             Some(v) => np.details.push(format!("{v}% muted")),
@@ -603,7 +606,7 @@ fn render_idle(frame: &mut Frame, state: &SharedState, ui: &UIStateGuard, rect: 
                 ui.theme.playlist_desc(),
             )),
             Line::from(Span::styled(
-                "enter plays · space pauses · ? shows every key",
+                "enter plays · space pauses · ctrl+r repeat · ctrl+s shuffle · f or ? every key",
                 ui.theme.playlist_desc(),
             )),
         ]

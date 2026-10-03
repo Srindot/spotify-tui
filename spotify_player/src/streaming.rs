@@ -215,6 +215,22 @@ fn track_local_playback(client: &AppClient, state: &SharedState, event: &player:
                 local.updated_at = std::time::Instant::now();
             }
         }
+        player::PlayerEvent::ShuffleChanged { shuffle } => {
+            if let Some(p) = player.buffered_playback.as_mut() {
+                p.shuffle_state = *shuffle;
+            }
+        }
+        player::PlayerEvent::RepeatChanged { context, track } => {
+            if let Some(p) = player.buffered_playback.as_mut() {
+                p.repeat_state = if *track {
+                    rspotify::model::RepeatState::Track
+                } else if *context {
+                    rspotify::model::RepeatState::Context
+                } else {
+                    rspotify::model::RepeatState::Off
+                };
+            }
+        }
         // stopped here, e.g. playback moved to another device
         player::PlayerEvent::Stopped { .. } | player::PlayerEvent::SessionDisconnected { .. } => {
             player.local = None;

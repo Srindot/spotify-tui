@@ -67,6 +67,9 @@ fn parse_current_playback_response(
     Ok(Some(serde_json::from_value(response)?))
 }
 
+/// How long connecting a session may take before retrying on port 443.
+const SESSION_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The application's Spotify client
 #[derive(Clone)]
 pub struct AppClient {
@@ -267,29 +270,32 @@ impl AppClient {
                 .is_some_and(|p| p.is_playing)
         });
 
-        let session = self.auth_config.session();
         let creds = auth::get_creds(&self.auth_config, reauth, true).context("get credentials")?;
-        self.spotify.set_session(session.clone()).await;
 
-        #[allow(unused_mut)]
-        let mut connected = false;
-
-        #[cfg(feature = "streaming")]
-        if let Some(state) = state {
-            if state.is_streaming_enabled() {
-                self.new_streaming_connection(state.clone(), session.clone(), creds.clone())
-                    .await
-                    .context("new streaming connection")?;
-                connected = true;
+        // librespot waits indefinitely when Spotify's preferred port (4070) is
+        // blocked, leaving a blank screen: give up after a while and retry on
+        // 443, which firewalls allow.
+        let can_fall_back = config::get_config().app_config.ap_port.is_none()
+            && !auth::USE_PORT_443.load(std::sync::atomic::Ordering::Relaxed);
+        let first = tokio::time::timeout(
+            SESSION_CONNECT_TIMEOUT,
+            self.connect_new_session(state, creds.clone()),
+        )
+        .await;
+        match first {
+            Ok(result) => result?,
+            Err(_) if can_fall_back => {
+                tracing::warn!(
+                    "Connecting to Spotify timed out after {}s (port 4070 may be blocked); retrying on port 443. Set `ap_port = 443` in app.toml to skip this wait",
+                    SESSION_CONNECT_TIMEOUT.as_secs()
+                );
+                auth::USE_PORT_443.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.connect_new_session(state, creds).await?;
             }
-        }
-
-        if !connected {
-            // if session is not connected (triggered by `new_streaming_connection`), connect to the session
-            session
-                .connect(creds, true)
-                .await
-                .context("connect to a session")?;
+            Err(_) => anyhow::bail!(
+                "connecting to Spotify timed out after {}s",
+                SESSION_CONNECT_TIMEOUT.as_secs()
+            ),
         }
 
         tracing::info!("Used a new session for Spotify client.");
@@ -305,6 +311,31 @@ impl AppClient {
         }
 
         Ok(())
+    }
+
+    /// Create a session and connect it (with the integrated player, if enabled).
+    async fn connect_new_session(
+        &self,
+        #[allow(unused_variables)] state: Option<&SharedState>,
+        creds: librespot_core::authentication::Credentials,
+    ) -> Result<()> {
+        let session = self.auth_config.session();
+        self.spotify.set_session(session.clone()).await;
+
+        #[cfg(feature = "streaming")]
+        if let Some(state) = state {
+            if state.is_streaming_enabled() {
+                self.new_streaming_connection(state.clone(), session.clone(), creds)
+                    .await
+                    .context("new streaming connection")?;
+                return Ok(());
+            }
+        }
+
+        session
+            .connect(creds, true)
+            .await
+            .context("connect to a session")
     }
 
     /// Check if the current session is valid and if invalid, create a new session
@@ -377,10 +408,16 @@ impl AppClient {
         {
             return false;
         }
-        let conn = self.stream_conn.lock();
-        let Some(spirc) = conn.as_ref() else {
+        // librespot ignores commands while it isn't the active device (e.g.
+        // after reconnecting): then the Web API, which re-activates it
+        let spirc = self.stream_conn.lock().clone();
+        let Some(spirc) = spirc else {
             return false;
         };
+        if !spirc.is_active().await {
+            tracing::info!("Integrated player isn't active; using the Web API for {request:?}");
+            return false;
+        }
         let result = match request {
             PlayerRequest::NextTrack => spirc.next(),
             PlayerRequest::PreviousTrack => spirc.prev(),
@@ -396,7 +433,15 @@ impl AppClient {
                 Some(volume) => librespot_volume(volume as u8),
             }),
             PlayerRequest::Shuffle => spirc.shuffle(!playback.shuffle_state),
-            // repeat, starting and transferring playback: Web API
+            // off → repeat this song → repeat the whole playlist → off
+            PlayerRequest::Repeat => match playback.repeat_state {
+                rspotify::model::RepeatState::Off => spirc.repeat_track(true),
+                rspotify::model::RepeatState::Track => {
+                    spirc.repeat_track(false).and_then(|()| spirc.repeat(true))
+                }
+                rspotify::model::RepeatState::Context => spirc.repeat(false),
+            },
+            // starting and transferring playback: Web API
             _ => return false,
         };
         match result {
@@ -411,6 +456,70 @@ impl AppClient {
                 false
             }
         }
+    }
+
+    /// Play/pause with no playback at all (Spotify drops it after a while
+    /// idle): bring it back on this app's player, playing, where Spotify
+    /// resumes the last track. Returns whether it handled the request.
+    #[cfg(feature = "streaming")]
+    async fn resume_idle_playback(
+        &self,
+        state: &SharedState,
+        request: &PlayerRequest,
+    ) -> Result<bool> {
+        let wants_play = matches!(request, PlayerRequest::Resume | PlayerRequest::ResumePause);
+        if !wants_play
+            || !state.is_streaming_enabled()
+            || state.player.read().buffered_playback.is_some()
+        {
+            return Ok(false);
+        }
+        tracing::info!("No playback (idle for a while?); resuming it on this player");
+        let device = self.spotify.session().await.device_id().to_string();
+        if let Err(err) = self.transfer_playback(&device, Some(true)).await {
+            let err = anyhow::Error::from(err);
+            if !is_device_not_found(&err) {
+                return Err(err.context("resume playback on this player"));
+            }
+            self.reconnect_integrated_player(state).await?;
+            let device = self.spotify.session().await.device_id().to_string();
+            self.transfer_playback(&device, Some(true))
+                .await
+                .context("resume playback on this player")?;
+        }
+        self.update_playback_non_blocking(state);
+        Ok(true)
+    }
+
+    /// Restart the integrated player and move playback to it, waiting until
+    /// Spotify lists it (registering takes a moment).
+    #[cfg(feature = "streaming")]
+    async fn reconnect_integrated_player(&self, state: &SharedState) -> Result<()> {
+        let was_playing = state
+            .player
+            .read()
+            .buffered_playback
+            .as_ref()
+            .is_some_and(|p| p.is_playing);
+        self.new_session(Some(state), false)
+            .await
+            .context("restart the integrated player")?;
+        let device = self.spotify.session().await.device_id().to_string();
+        let mut last_err = None;
+        for _ in 0..5 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            match self.transfer_playback(&device, Some(was_playing)).await {
+                Ok(()) => {
+                    last_err = None;
+                    break;
+                }
+                Err(err) => last_err = Some(err),
+            }
+        }
+        if let Some(err) = last_err {
+            return Err(anyhow::Error::from(err).context("move playback to the restarted player"));
+        }
+        self.retrieve_current_playback(state, true).await
     }
 
     /// Whether the integrated player is the device playing, and so owns the
@@ -637,6 +746,12 @@ impl AppClient {
         {
             return false;
         }
+        let Some(active) = self.stream_conn.lock().clone() else {
+            return false;
+        };
+        if !active.is_active().await {
+            return false; // `load` would be ignored; the Web API re-activates it
+        }
         let playing_track = |offset: &Option<rspotify::model::Offset>| match offset {
             None => Some(None),
             Some(rspotify::model::Offset::Uri(uri)) => Some(Some(PlayingTrack::Uri(uri.clone()))),
@@ -788,7 +903,9 @@ impl AppClient {
                     rspotify::model::RepeatState::Context => rspotify::model::RepeatState::Off,
                 };
 
-                self.repeat(next_repeat_state, device_id).await?;
+                if !local {
+                    self.repeat(next_repeat_state, device_id).await?;
+                }
 
                 playback.repeat_state = next_repeat_state;
             }
@@ -887,8 +1004,26 @@ impl AppClient {
                 state.data.write().user_data.user = Some(user);
             }
             ClientRequest::Player(request) => {
+                #[cfg(feature = "streaming")]
+                if self.resume_idle_playback(state, &request).await? {
+                    return Ok(());
+                }
                 let playback = state.player.read().buffered_playback.clone();
-                let playback = self.handle_player_request(request, playback).await?;
+                let playback = match self.handle_player_request(request.clone(), playback).await {
+                    Ok(playback) => playback,
+                    #[cfg(feature = "streaming")]
+                    Err(err) if is_device_not_found(&err) && state.is_streaming_enabled() => {
+                        // after a long idle or a dropped connection Spotify
+                        // forgets this player: reconnect, then try once more
+                        tracing::warn!(
+                            "Spotify no longer knows this player ({err:#}); reconnecting and retrying"
+                        );
+                        self.reconnect_integrated_player(state).await?;
+                        let playback = state.player.read().buffered_playback.clone();
+                        self.handle_player_request(request, playback).await?
+                    }
+                    Err(err) => return Err(err),
+                };
                 state.player.write().buffered_playback = playback;
                 self.update_playback_non_blocking(state);
             }
@@ -1707,19 +1842,23 @@ impl AppClient {
         // Before adding new item, checks if that item already exists in the library to avoid adding a duplicated item.
         match item {
             Item::Track(track) => {
-                let contains = self
-                    .library_contains([LibraryId::Track(track.id.as_ref())])
-                    .await?;
-                if !contains[0] {
-                    self.library_add([LibraryId::Track(track.id.as_ref())])
-                        .await?;
-                    // update the in-memory `user_data`
-                    state
-                        .data
-                        .write()
-                        .user_data
-                        .saved_tracks
-                        .insert(track.id.uri(), track);
+                // shown as liked at once (the requests can take a while);
+                // undone if Spotify refuses. Adding a liked track again is
+                // harmless, so no "already liked?" request first.
+                let uri = track.id.uri();
+                let id = track.id.clone();
+                let was_liked = state
+                    .data
+                    .write()
+                    .user_data
+                    .saved_tracks
+                    .insert(uri.clone(), track)
+                    .is_some();
+                if let Err(err) = self.library_add([LibraryId::Track(id.as_ref())]).await {
+                    if !was_liked {
+                        state.data.write().user_data.saved_tracks.remove(&uri);
+                    }
+                    return Err(err.into());
                 }
             }
             Item::Album(album) => {
@@ -1794,9 +1933,15 @@ impl AppClient {
     async fn delete_from_library(&self, state: &SharedState, id: ItemId) -> Result<()> {
         match id {
             ItemId::Track(id) => {
+                // unliked at once; put back if Spotify refuses
                 let uri = id.uri();
-                self.library_remove([LibraryId::Track(id)]).await?;
-                state.data.write().user_data.saved_tracks.remove(&uri);
+                let removed = state.data.write().user_data.saved_tracks.remove(&uri);
+                if let Err(err) = self.library_remove([LibraryId::Track(id)]).await {
+                    if let Some(track) = removed {
+                        state.data.write().user_data.saved_tracks.insert(uri, track);
+                    }
+                    return Err(err.into());
+                }
             }
             ItemId::Album(id) => {
                 state
@@ -2691,5 +2836,42 @@ mod queue_edit_tests {
         apply_queue_edit(&mut q, &QueueEdit::Remove(5));
         apply_queue_edit(&mut q, &QueueEdit::Move { from: 0, to: 3 });
         assert_eq!(uris(&q), ["d"]);
+    }
+}
+
+/// Whether Spotify answered "404 Not Found": the device a player command
+/// was meant for isn't registered any more.
+fn is_device_not_found(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rspotify::ClientError>(),
+            Some(rspotify::ClientError::Http(http))
+                if matches!(http.as_ref(), rspotify::http::HttpError::StatusCode(r)
+                    if r.status() == reqwest::StatusCode::NOT_FOUND)
+        )
+    })
+}
+
+#[cfg(test)]
+mod device_not_found_tests {
+    use super::is_device_not_found;
+
+    fn http_error(status: u16) -> anyhow::Error {
+        let response = http::Response::builder()
+            .status(status)
+            .body(Vec::<u8>::new())
+            .unwrap();
+        let err = rspotify::ClientError::from(rspotify::http::HttpError::StatusCode(
+            reqwest::Response::from(response),
+        ));
+        anyhow::Error::from(err).context("handle the player request")
+    }
+
+    #[test]
+    fn spots_device_not_found() {
+        assert!(is_device_not_found(&http_error(404)));
+        assert!(!is_device_not_found(&http_error(429)), "rate limits aren't");
+        assert!(!is_device_not_found(&http_error(500)));
+        assert!(!is_device_not_found(&anyhow::anyhow!("no playback found")));
     }
 }

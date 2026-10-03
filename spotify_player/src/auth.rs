@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -52,6 +53,10 @@ pub struct AuthConfig {
     pub login_redirect_uri: String,
 }
 
+/// Set when connecting on Spotify's preferred port (4070) hung, e.g. behind a
+/// firewall that only allows web ports: later sessions use 443.
+pub static USE_PORT_443: AtomicBool = AtomicBool::new(false);
+
 impl Default for AuthConfig {
     fn default() -> Self {
         AuthConfig {
@@ -64,7 +69,10 @@ impl Default for AuthConfig {
 impl AuthConfig {
     /// Create a `librespot::Session` from authentication configs
     pub fn session(&self) -> Session {
-        let session_config = config::get_config().app_config.session_config();
+        let mut session_config = config::get_config().app_config.session_config();
+        if session_config.ap_port.is_none() && USE_PORT_443.load(Ordering::Relaxed) {
+            session_config.ap_port = Some(443);
+        }
         Session::new(session_config, Some(self.cache.clone()))
     }
 

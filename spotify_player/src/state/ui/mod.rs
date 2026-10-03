@@ -71,10 +71,16 @@ impl UIState {
         self.history.last_mut().expect("non-empty history")
     }
 
+    /// `/`: start filtering the current list, or edit the filter again.
     pub fn new_search_popup(&mut self) {
+        if let Some(PopupState::Search { typing, .. }) = self.popup.as_mut() {
+            *typing = true; // keep the query and the selection
+            return;
+        }
         self.current_page_mut().select(0);
         self.popup = Some(PopupState::Search {
             query: String::new(),
+            typing: true,
         });
     }
 
@@ -101,7 +107,7 @@ impl UIState {
     /// Get a list of items possibly filtered by a search query if exists a search popup
     pub fn search_filtered_items<'a, T: std::fmt::Display>(&self, items: &'a [T]) -> Vec<&'a T> {
         match self.popup {
-            Some(PopupState::Search { ref query }) => filtered_items_from_query(query, items),
+            Some(PopupState::Search { ref query, .. }) => filtered_items_from_query(query, items),
             _ => items.iter().collect::<Vec<_>>(),
         }
     }
@@ -139,5 +145,35 @@ impl Default for UIState {
             #[cfg(feature = "image")]
             picker: Picker::halfblocks(),
         }
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::{PopupState, UIState};
+
+    #[test]
+    fn slash_again_edits_the_same_filter() {
+        let mut ui = UIState::default();
+        ui.new_search_popup();
+        if let Some(PopupState::Search { query, typing }) = ui.popup.as_mut() {
+            query.push_str("love");
+            *typing = false; // enter: browsing the filtered list
+        }
+        ui.new_search_popup(); // `/` again
+        match &ui.popup {
+            Some(PopupState::Search { query, typing }) => {
+                assert_eq!(query, "love", "the filter is kept");
+                assert!(*typing, "and editable again");
+            }
+            other => panic!("popup = {other:?}"),
+        }
+        let items = ["Lover", "Nights", "I Love You So"];
+        let shown: Vec<_> = ui
+            .search_filtered_items(&items)
+            .into_iter()
+            .copied()
+            .collect();
+        assert_eq!(shown, ["Lover", "I Love You So"]);
     }
 }
