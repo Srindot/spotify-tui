@@ -179,6 +179,13 @@ fn track_local_playback(client: &AppClient, state: &SharedState, event: &player:
                 .max_by_key(|c| c.width)
                 .map(|c| c.url.clone());
             let is_playing = player.local.as_ref().is_some_and(|l| l.is_playing);
+            if player
+                .parked
+                .as_ref()
+                .is_some_and(|p| p.uri != audio_item.uri)
+            {
+                player.parked = None;
+            }
             player.local = Some(LocalNowPlaying {
                 uri: audio_item.uri.clone(),
                 name: audio_item.name.clone(),
@@ -205,6 +212,9 @@ fn track_local_playback(client: &AppClient, state: &SharedState, event: &player:
         | player::PlayerEvent::Seeked { position_ms, .. }
         | player::PlayerEvent::PositionCorrection { position_ms, .. }
         | player::PlayerEvent::PositionChanged { position_ms, .. } => {
+            if matches!(event, player::PlayerEvent::Playing { .. }) {
+                player.parked = None;
+            }
             if let Some(local) = player.local.as_mut() {
                 match event {
                     player::PlayerEvent::Playing { .. } => local.is_playing = true,
@@ -216,11 +226,13 @@ fn track_local_playback(client: &AppClient, state: &SharedState, event: &player:
             }
         }
         player::PlayerEvent::ShuffleChanged { shuffle } => {
+            player.local_options.0 = *shuffle;
             if let Some(p) = player.buffered_playback.as_mut() {
                 p.shuffle_state = *shuffle;
             }
         }
         player::PlayerEvent::RepeatChanged { context, track } => {
+            (player.local_options.1, player.local_options.2) = (*context, *track);
             if let Some(p) = player.buffered_playback.as_mut() {
                 p.repeat_state = if *track {
                     rspotify::model::RepeatState::Track
@@ -233,7 +245,16 @@ fn track_local_playback(client: &AppClient, state: &SharedState, event: &player:
         }
         // stopped here, e.g. playback moved to another device
         player::PlayerEvent::Stopped { .. } | player::PlayerEvent::SessionDisconnected { .. } => {
-            player.local = None;
+            if let Some(mut stopped) = player.local.take() {
+                stopped.position = stopped.progress().min(stopped.duration);
+                stopped.is_playing = false;
+                // Spotify's takeover after a reconnect loads the song at 0:00
+                // and drops it again; keep where it really was
+                let same = player.parked.as_ref().is_some_and(|p| p.uri == stopped.uri);
+                if !same || stopped.position > chrono::Duration::zero() {
+                    player.parked = Some(stopped);
+                }
+            }
         }
         _ => {}
     }
@@ -244,7 +265,7 @@ pub async fn new_connection(
     state: SharedState,
     session: Session,
     creds: Credentials,
-) -> anyhow::Result<Spirc> {
+) -> anyhow::Result<(Spirc, Arc<player::Player>)> {
     let configs = config::get_config();
     let device = &configs.app_config.device;
 
@@ -401,6 +422,7 @@ pub async fn new_connection(
 
     tracing::info!("Starting an integrated Spotify player using librespot's spirc protocol");
 
+    let player_handle = Arc::clone(&player);
     let (spirc, spirc_task) = Spirc::new(connect_config, session, creds, player, mixer)
         .await
         .context("initialize spirc")?;
@@ -414,5 +436,5 @@ pub async fn new_connection(
 
     tracing::info!("New streaming connection has been established!");
 
-    Ok(spirc)
+    Ok((spirc, player_handle))
 }

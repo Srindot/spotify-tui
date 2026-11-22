@@ -30,6 +30,13 @@ pub struct PlayerState {
     /// prefers this one.
     pub local: Option<LocalNowPlaying>,
 
+    /// The song the integrated player was on when it stopped (Spotify
+    /// deactivates an idle paused player), to resume it from where it was.
+    pub parked: Option<LocalNowPlaying>,
+    /// The integrated player's shuffle, repeat-context and repeat-track.
+    #[cfg_attr(not(feature = "streaming"), allow(dead_code))]
+    pub local_options: (bool, bool, bool),
+
     /// What's coming up on the integrated player, straight from librespot
     /// (editable: remove, move, play from). `None` when not playing here.
     pub local_queue: Option<Vec<LocalQueueItem>>,
@@ -114,6 +121,16 @@ impl PlayerState {
 
     pub fn currently_playing(&self) -> Option<&rspotify::model::PlayableItem> {
         self.playback.as_ref().and_then(|p| p.item.as_ref())
+    }
+
+    /// The position of what's playing as shown on screen: the integrated
+    /// player's own when it plays here (the Web API's can be stale or
+    /// missing, which made seeking do nothing), else the Web API's.
+    pub fn current_progress(&self) -> Option<chrono::Duration> {
+        match &self.local {
+            Some(local) => Some(local.progress().min(local.duration)),
+            None => self.playback_progress(),
+        }
     }
 
     pub fn playback_progress(&self) -> Option<chrono::Duration> {

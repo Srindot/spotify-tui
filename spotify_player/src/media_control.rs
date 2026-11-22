@@ -14,6 +14,9 @@ use crate::{
     utils::map_join,
 };
 
+/// A repeat of the same media key within this is taken as a duplicate.
+const MEDIA_KEY_REPEAT: std::time::Duration = std::time::Duration::from_millis(500);
+
 fn update_control_metadata(
     state: &SharedState,
     controls: &mut MediaControls,
@@ -98,8 +101,35 @@ pub fn start_event_watcher(
     };
     let mut controls = MediaControls::new(config)?;
 
+    let last: std::sync::Mutex<Option<(String, std::time::Instant)>> = std::sync::Mutex::new(None);
     controls.attach(move |e| {
         tracing::info!("Got a media control event: {e:?}");
+        // Some keys and headsets deliver one press twice; a play/pause pair
+        // within half a second pauses and resumes (an audible hiccup).
+        let key = format!("{e:?}");
+        let repeat = {
+            let mut last = last
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let repeat = last
+                .as_ref()
+                .is_some_and(|(k, at)| *k == key && at.elapsed() < MEDIA_KEY_REPEAT);
+            *last = Some((key, std::time::Instant::now()));
+            repeat
+        };
+        if repeat
+            && matches!(
+                e,
+                MediaControlEvent::Toggle
+                    | MediaControlEvent::Play
+                    | MediaControlEvent::Pause
+                    | MediaControlEvent::Next
+                    | MediaControlEvent::Previous
+            )
+        {
+            tracing::info!("Ignoring a repeated media key event: {e:?}");
+            return;
+        }
         match e {
             MediaControlEvent::Play => {
                 client_pub

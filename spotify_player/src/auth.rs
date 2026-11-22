@@ -66,6 +66,9 @@ impl Default for AuthConfig {
     }
 }
 
+/// Size cap of the audio cache (songs played before start from disk).
+const AUDIO_CACHE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 impl AuthConfig {
     /// Create a `librespot::Session` from authentication configs
     pub fn session(&self) -> Session {
@@ -83,11 +86,14 @@ impl AuthConfig {
             None
         };
 
+        // capped: at 320 kbps a song is ~10 MB; the least recently played
+        // songs go first
+        let audio_cache_limit = audio_cache_folder.as_ref().map(|_| AUDIO_CACHE_LIMIT_BYTES);
         let cache = Cache::new(
             Some(configs.cache_folder.clone()),
             None,
             audio_cache_folder,
-            None,
+            audio_cache_limit,
         )?;
 
         Ok(AuthConfig {

@@ -20,6 +20,8 @@ pub enum FileCacheKey {
     SavedShows,
     SavedAlbums,
     SavedTracks,
+    /// your profile (the name in the greeting)
+    User,
 }
 
 /// default time-to-live cache duration
@@ -33,7 +35,7 @@ pub struct AppData {
     pub browse: BrowseData,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 /// current user's data
 pub struct UserData {
     pub user: Option<rspotify::model::PrivateUser>,
@@ -119,6 +121,18 @@ impl MemoryCaches {
 }
 
 impl AppData {
+    /// Fill the liked-songs page from the saved copy, so it shows before
+    /// Spotify answers.
+    pub fn prefill_liked(&mut self) {
+        let uri = super::USER_LIKED_TRACKS_URI.to_string();
+        if self.caches.context.contains_key(&uri) {
+            return;
+        }
+        if let Some(ctx) = self.user_data.liked_from_cache() {
+            self.caches.context.insert(uri, ctx, *TTL_CACHE_DURATION);
+        }
+    }
+
     pub fn new(cache_folder: &Path) -> Self {
         Self {
             user_data: UserData::new_from_file_caches(cache_folder),
@@ -161,10 +175,28 @@ impl AppData {
 }
 
 impl UserData {
+    /// The liked-songs list from the saved copy (newest first; by name when
+    /// the date isn't known), or `None` when there is none yet.
+    pub fn liked_from_cache(&self) -> Option<Context> {
+        if self.saved_tracks.is_empty() {
+            return None;
+        }
+        let mut tracks: Vec<Track> = self.saved_tracks.values().cloned().collect();
+        tracks.sort_by(|a, b| {
+            b.added_at
+                .cmp(&a.added_at)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        Some(Context::Tracks {
+            tracks,
+            desc: "User's liked tracks".to_string(),
+        })
+    }
+
     /// Construct a new user data based on file caches
     pub fn new_from_file_caches(cache_folder: &Path) -> Self {
         Self {
-            user: None,
+            user: load_data_from_file_cache(FileCacheKey::User, cache_folder),
             playlists: load_data_from_file_cache(FileCacheKey::Playlists, cache_folder)
                 .unwrap_or_default(),
             playlist_folder_node: load_data_from_file_cache(

@@ -614,7 +614,7 @@ fn handle_global_command(
         }
         Command::SeekForward { duration } => {
             let repeats: u16 = count.unwrap_or(1) as u16;
-            if let Some(progress) = state.player.read().playback_progress() {
+            if let Some(progress) = state.player.read().current_progress() {
                 let duration = duration
                     .unwrap_or(config::get_config().app_config.seek_duration_secs)
                     .mul(repeats);
@@ -625,7 +625,7 @@ fn handle_global_command(
         }
         Command::SeekBackward { duration } => {
             let repeats: u16 = count.unwrap_or(1) as u16;
-            if let Some(progress) = state.player.read().playback_progress() {
+            if let Some(progress) = state.player.read().current_progress() {
                 let duration = duration
                     .unwrap_or(config::get_config().app_config.seek_duration_secs)
                     .mul(repeats);

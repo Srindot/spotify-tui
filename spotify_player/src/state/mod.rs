@@ -30,6 +30,9 @@ pub struct State {
 
     pub is_daemon: bool,
 
+    /// The Spotify session is up (the UI starts before it is).
+    pub connected: std::sync::atomic::AtomicBool,
+
     /// Shared FFT frequency-band data written by the audio sink and read by the UI.
     /// `Some` only when `enable_audio_visualization` is `true`; avoids allocating
     /// the mutex/state entirely when the feature is not in use.
@@ -56,6 +59,7 @@ impl State {
             player: RwLock::new(PlayerState::default()),
             data: RwLock::new(app_data),
             is_daemon,
+            connected: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "streaming")]
             vis_bands: if configs.app_config.enable_audio_visualization {
                 Some(Arc::new(Mutex::new(

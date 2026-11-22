@@ -403,7 +403,14 @@ struct NowPlaying {
 fn now_playing(state: &SharedState) -> Option<NowPlaying> {
     let player = state.player.read();
     let data = state.data.read();
-    let mut np = if let Some(local) = &player.local {
+    // what stopped here is still shown (paused) until something else plays
+    let local = player.local.as_ref().or_else(|| {
+        player
+            .parked
+            .as_ref()
+            .filter(|_| player.currently_playing().is_none())
+    });
+    let mut np = if let Some(local) = local {
         // playing here: librespot's own state, current even when the Web API
         // is slow or rate limited
         NowPlaying {
@@ -584,7 +591,7 @@ fn render_now_playing(frame: &mut Frame, state: &SharedState, ui: &mut UIStateGu
 
 /// Nothing playing: say so, and how to start.
 fn render_idle(frame: &mut Frame, state: &SharedState, ui: &UIStateGuard, rect: Rect) {
-    let waiting = state.player.read().playback_last_updated_time.is_none();
+    let waiting = !state.connected.load(std::sync::atomic::Ordering::Relaxed);
     let lines = if waiting {
         const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         let i = (std::time::SystemTime::now()

@@ -146,7 +146,9 @@ pub struct Track {
     pub album: Option<Album>,
     pub duration: std::time::Duration,
     pub explicit: bool,
-    #[serde(skip)]
+    // saved with the liked-songs file cache, to show it in order before
+    // Spotify answers (older cache files don't have it: 0)
+    #[serde(default)]
     pub added_at: u64,
 }
 

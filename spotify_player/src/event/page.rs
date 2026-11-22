@@ -630,6 +630,8 @@ fn handle_command_for_browse_page(
     Ok(true)
 }
 
+// only the streaming build can fail here (editing the integrated player's queue)
+#[cfg_attr(not(feature = "streaming"), allow(clippy::unnecessary_wraps))]
 fn handle_command_for_queue_page(
     command: Command,
     client_pub: &flume::Sender<ClientRequest>,

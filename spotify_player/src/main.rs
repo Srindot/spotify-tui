@@ -79,46 +79,16 @@ fn init_logging(
     Ok(())
 }
 
-#[tokio::main]
-async fn start_app(state: &state::SharedState) -> Result<()> {
-    // client channels
-    let (client_pub, client_sub) = flume::unbounded::<client::ClientRequest>();
-
-    #[cfg(feature = "pulseaudio-backend")]
-    {
-        // set environment variables for PulseAudio
-        if std::env::var("PULSE_PROP_application.name").is_err() {
-            std::env::set_var("PULSE_PROP_application.name", "spotify-player");
-        }
-        if std::env::var("PULSE_PROP_application.icon_name").is_err() {
-            std::env::set_var("PULSE_PROP_application.icon_name", "spotify");
-        }
-        if std::env::var("PULSE_PROP_stream.description").is_err() {
-            let configs = config::get_config();
-            std::env::set_var(
-                "PULSE_PROP_stream.description",
-                format!(
-                    "Spotify Connect endpoint ({})",
-                    configs.app_config.device.name
-                ),
-            );
-        }
-        if std::env::var("PULSE_PROP_media.software").is_err() {
-            std::env::set_var("PULSE_PROP_media.software", "Spotify");
-        }
-        if std::env::var("PULSE_PROP_media.role").is_err() {
-            std::env::set_var("PULSE_PROP_media.role", "music");
-        }
-    }
-
-    // create a Spotify API client
-    let client = client::AppClient::new()
-        .await
-        .context("construct app client")?;
-    client
-        .new_session(Some(state), true)
-        .await
-        .context("initialize new Spotify session")?;
+/// Request the user's data and start the tasks that use the connected client.
+fn start_client_tasks(
+    client: &client::AppClient,
+    state: &state::SharedState,
+    client_pub: &flume::Sender<client::ClientRequest>,
+    client_sub: flume::Receiver<client::ClientRequest>,
+) -> Result<()> {
+    state
+        .connected
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 
     // request user data
     client_pub.send(client::ClientRequest::GetCurrentUser)?;
@@ -157,6 +127,87 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
             client::start_session_watcher(state, client).await;
         }
     });
+    Ok(())
+}
+
+#[tokio::main]
+async fn start_app(state: &state::SharedState) -> Result<()> {
+    // client channels
+    let (client_pub, client_sub) = flume::unbounded::<client::ClientRequest>();
+
+    #[cfg(feature = "pulseaudio-backend")]
+    {
+        // set environment variables for PulseAudio
+        if std::env::var("PULSE_PROP_application.name").is_err() {
+            std::env::set_var("PULSE_PROP_application.name", "spotify-player");
+        }
+        if std::env::var("PULSE_PROP_application.icon_name").is_err() {
+            std::env::set_var("PULSE_PROP_application.icon_name", "spotify");
+        }
+        if std::env::var("PULSE_PROP_stream.description").is_err() {
+            let configs = config::get_config();
+            std::env::set_var(
+                "PULSE_PROP_stream.description",
+                format!(
+                    "Spotify Connect endpoint ({})",
+                    configs.app_config.device.name
+                ),
+            );
+        }
+        if std::env::var("PULSE_PROP_media.software").is_err() {
+            std::env::set_var("PULSE_PROP_media.software", "Spotify");
+        }
+        if std::env::var("PULSE_PROP_media.role").is_err() {
+            std::env::set_var("PULSE_PROP_media.role", "music");
+        }
+    }
+
+    // the liked-songs page from the saved copy, before connecting
+    state.data.write().prefill_liked();
+
+    // create a Spotify API client (refreshing the login can be interactive,
+    // so this stays before the UI takes over the terminal)
+    let client = client::AppClient::new()
+        .await
+        .context("construct app client")?;
+
+    // Connecting the session takes seconds. With saved credentials it runs
+    // behind the UI, which shows the cached library at once; a first login
+    // prints to the terminal, so then it runs first. Requests sent meanwhile
+    // wait in the channel until the handler starts.
+    let connect = {
+        let client = client.clone();
+        let state = state.clone();
+        let client_pub = client_pub.clone();
+        async move {
+            let mut delay = std::time::Duration::from_secs(2);
+            loop {
+                match client.new_session(Some(&state), true).await {
+                    Ok(()) => break,
+                    Err(err) if state.is_daemon || !client.has_cached_credentials() => {
+                        return Err(err.context("initialize new Spotify session"));
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "Failed to connect to Spotify, retrying in {delay:?}: {err:#}"
+                        );
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(std::time::Duration::from_secs(30));
+                    }
+                }
+            }
+            start_client_tasks(&client, &state, &client_pub, client_sub)
+        }
+    };
+    if client.has_cached_credentials() && !state.is_daemon {
+        tokio::task::spawn(async move {
+            if let Err(err) = connect.await {
+                tracing::error!("Failed to start the Spotify client: {err:#}");
+            }
+        });
+    } else {
+        connect.await?;
+    }
 
     // player event watcher task
     std::thread::Builder::new()

@@ -55,6 +55,10 @@ pub struct UIState {
     /// Count prefix for vim-style navigation (e.g., 5j, 10k)
     pub count_prefix: Option<usize>,
 
+    /// The song under the cursor in the focused song list (preloaded so
+    /// playing it starts at once).
+    pub highlighted_track: Option<String>,
+
     #[cfg(feature = "image")]
     pub last_cover_image_render_info: ImageRenderInfo,
 
@@ -137,6 +141,7 @@ impl Default for UIState {
             playback_progress_bar_rect: Rect::default(),
 
             count_prefix: None,
+            highlighted_track: None,
 
             #[cfg(feature = "image")]
             last_cover_image_render_info: ImageRenderInfo::default(),

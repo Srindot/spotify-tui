@@ -21,6 +21,7 @@ pub enum PlayerRequest {
 
 #[derive(Clone, Debug)]
 /// An edit to the integrated player's queue (indices into what's coming up)
+#[cfg_attr(not(feature = "streaming"), allow(dead_code))]
 pub enum QueueEdit {
     Remove(usize),
     Move { from: usize, to: usize },
@@ -64,6 +65,9 @@ pub enum ClientRequest {
     /// refresh what's coming up on the integrated player
     #[cfg(feature = "streaming")]
     GetLocalQueue,
+    /// start downloading a song before it's played (the one under the cursor)
+    #[cfg(feature = "streaming")]
+    PreloadTrack(String),
     #[cfg(feature = "streaming")]
     EditLocalQueue(QueueEdit),
     CreatePlaylist {

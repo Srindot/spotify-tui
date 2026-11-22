@@ -81,6 +81,18 @@ pub struct AppClient {
     api_client: WebApiClient,
     #[cfg(feature = "streaming")]
     stream_conn: Arc<Mutex<Option<librespot_connect::Spirc>>>,
+    /// librespot's player, to preload the song you're about to play.
+    #[cfg(feature = "streaming")]
+    stream_player: Arc<parking_lot::Mutex<Option<Arc<librespot_playback::player::Player>>>>,
+    /// The song last preloaded for the cursor (not preloaded twice).
+    #[cfg(feature = "streaming")]
+    preloaded: Arc<parking_lot::Mutex<Option<String>>>,
+    /// What the integrated player was last told to play, to load it again
+    /// once Spotify has dropped the idle player.
+    #[cfg(feature = "streaming")]
+    last_load: Arc<parking_lot::Mutex<Option<LastLoad>>>,
+    /// Songs already looked up through librespot, by uri.
+    track_cache: Arc<parking_lot::Mutex<HashMap<String, Track>>>,
 }
 
 impl Deref for AppClient {
@@ -183,7 +195,160 @@ impl AppClient {
 
             #[cfg(feature = "streaming")]
             stream_conn: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "streaming")]
+            stream_player: Arc::new(parking_lot::Mutex::new(None)),
+            #[cfg(feature = "streaming")]
+            preloaded: Arc::new(parking_lot::Mutex::new(None)),
+            #[cfg(feature = "streaming")]
+            last_load: Arc::new(parking_lot::Mutex::new(None)),
+            track_cache: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         })
+    }
+
+    /// The liked songs, newest first, from librespot's "collection" context.
+    async fn liked_tracks_via_librespot(
+        &self,
+        known: &HashMap<String, Track>,
+    ) -> Result<Vec<Track>> {
+        let session = self.spotify.session().await;
+        let ctx = session
+            .spclient()
+            .get_context(&format!("spotify:user:{}:collection", session.username()))
+            .await
+            .context("get the liked songs")?;
+        if ctx
+            .pages
+            .iter()
+            .any(|p| p.tracks.is_empty() && p.page_url.is_some())
+        {
+            anyhow::bail!("liked songs come in pages that aren't loaded inline");
+        }
+        let liked: Vec<(String, u64)> = ctx
+            .pages
+            .iter()
+            .flat_map(|p| p.tracks.iter())
+            .filter_map(|t| {
+                let uri = t.uri.clone().filter(|u| u.starts_with("spotify:track:"))?;
+                // milliseconds; the app keeps seconds (as from the Web API)
+                let added = t
+                    .metadata
+                    .get("added_at")
+                    .and_then(|v| v.parse::<u64>().ok());
+                Some((uri, added.map_or(0, |ms| ms / 1000)))
+            })
+            .collect();
+        let mut tracks = self.tracks_via_librespot(&liked, known).await;
+        tracks.sort_by_key(|t| std::cmp::Reverse(t.added_at));
+        Ok(tracks)
+    }
+
+    /// A playlist's songs through librespot, with its details from your saved
+    /// playlists (or the Web API, which still gives those to new apps).
+    async fn playlist_context_via_librespot(
+        &self,
+        state: &SharedState,
+        id: &PlaylistId<'_>,
+    ) -> Result<Context> {
+        use librespot_metadata::Metadata;
+        let session = self.spotify.session().await;
+        let uri = librespot_core::SpotifyUri::from_uri(&id.uri()).context("playlist uri")?;
+        let playlist = librespot_metadata::Playlist::get(&session, &uri)
+            .await
+            .context("get the playlist")?;
+        if playlist.contents.is_truncated {
+            anyhow::bail!("the playlist came back truncated");
+        }
+        let uris: Vec<(String, u64)> = playlist
+            .tracks()
+            .filter_map(|u| u.to_uri().ok())
+            .filter(|u| u.starts_with("spotify:track:"))
+            .map(|u| (u, 0))
+            .collect();
+        let known = state.data.read().user_data.saved_tracks.clone();
+        let tracks = self.tracks_via_librespot(&uris, &known).await;
+
+        let saved = state
+            .data
+            .read()
+            .user_data
+            .playlists
+            .iter()
+            .find_map(|item| match item {
+                PlaylistFolderItem::Playlist(p) if p.id.id() == id.id() => Some(p.clone()),
+                _ => None,
+            });
+        let info = match saved {
+            Some(p) => p,
+            None => self
+                .playlist(id.clone(), None, Some(rspotify::model::Market::FromToken))
+                .await
+                .context("get the playlist's details")?
+                .into(),
+        };
+        Ok(Context::Playlist {
+            playlist: info,
+            tracks,
+        })
+    }
+
+    /// Songs by uri (in the given order, with the given `added_at`): from
+    /// `known`, the client's cache, or librespot's metadata service (in
+    /// parallel). Songs that can't be looked up (removed, local files) are
+    /// left out.
+    async fn tracks_via_librespot(
+        &self,
+        uris: &[(String, u64)],
+        known: &HashMap<String, Track>,
+    ) -> Vec<Track> {
+        use futures::StreamExt;
+        use librespot_metadata::Metadata;
+        let missing: Vec<String> = {
+            let cache = self.track_cache.lock();
+            uris.iter()
+                .filter(|(uri, _)| !known.contains_key(uri) && !cache.contains_key(uri))
+                .map(|(uri, _)| uri.clone())
+                .collect()
+        };
+        if !missing.is_empty() {
+            let session = self.spotify.session().await;
+            // one request per batch of songs; any it doesn't answer for are
+            // looked up one by one below
+            let batched = tracks_batched(&session, &missing).await;
+            let missing: Vec<String> = missing
+                .into_iter()
+                .filter(|uri| !batched.iter().any(|(u, _)| u == uri))
+                .collect();
+            self.track_cache.lock().extend(batched);
+            let fetched: Vec<(String, Track)> = futures::stream::iter(missing)
+                .map(|uri| {
+                    let session = session.clone();
+                    async move {
+                        let id = librespot_core::SpotifyUri::from_uri(&uri).ok()?;
+                        let track = librespot_metadata::Track::get(&session, &id).await.ok()?;
+                        Some((uri, track_from_librespot(&track)?))
+                    }
+                })
+                .buffer_unordered(24)
+                .filter_map(|t| async move { t })
+                .collect()
+                .await;
+            self.track_cache.lock().extend(fetched);
+        }
+        let cache = self.track_cache.lock();
+        uris.iter()
+            .filter_map(|(uri, added_at)| {
+                let mut t = known.get(uri).or_else(|| cache.get(uri))?.clone();
+                if *added_at > 0 {
+                    t.added_at = *added_at;
+                }
+                Some(t)
+            })
+            .collect()
+    }
+
+    /// Whether the streaming login is saved (connecting needs no interaction).
+    pub fn has_cached_credentials(&self) -> bool {
+        self.auth_config.cache.credentials().is_some()
     }
 
     /// Initialize the application's playback upon creating a new session or during startup.
@@ -357,8 +522,10 @@ impl AppClient {
         session: librespot_core::Session,
         creds: librespot_core::authentication::Credentials,
     ) -> Result<()> {
-        let new_conn =
+        let (new_conn, player) =
             crate::streaming::new_connection(self.clone(), state, session, creds).await?;
+        *self.stream_player.lock() = Some(player);
+        *self.preloaded.lock() = None;
         let mut stream_conn = self.stream_conn.lock();
         // shutdown old streaming connection and replace it with a new connection
         if let Some(conn) = stream_conn.as_ref() {
@@ -385,6 +552,21 @@ impl AppClient {
                 true
             }
             None => false,
+        }
+    }
+
+    /// Playback metadata for music just started on the integrated player.
+    #[cfg(feature = "streaming")]
+    async fn local_playback_metadata(&self) -> PlaybackMetadata {
+        let device = &config::get_config().app_config.device;
+        PlaybackMetadata {
+            device_name: device.name.clone(),
+            device_id: Some(self.spotify.session().await.device_id().to_string()),
+            volume: Some(u32::from(device.volume)),
+            is_playing: true,
+            repeat_state: rspotify::model::RepeatState::Off,
+            shuffle_state: false,
+            mute_state: None,
         }
     }
 
@@ -468,13 +650,27 @@ impl AppClient {
         request: &PlayerRequest,
     ) -> Result<bool> {
         let wants_play = matches!(request, PlayerRequest::Resume | PlayerRequest::ResumePause);
-        if !wants_play
-            || !state.is_streaming_enabled()
-            || state.player.read().buffered_playback.is_some()
-        {
+        if !wants_play || !state.is_streaming_enabled() {
+            return Ok(false);
+        }
+        if self.resume_parked(state).await {
+            return Ok(true);
+        }
+        if state.player.read().buffered_playback.is_some() {
             return Ok(false);
         }
         tracing::info!("No playback (idle for a while?); resuming it on this player");
+        // librespot's own transfer: Spotify's connection, not the rate-limited
+        // Web API; Spotify resumes the last track here
+        let spirc = self.stream_conn.lock().clone();
+        if let Some(spirc) = spirc {
+            if !spirc.is_active().await && spirc.transfer(None).is_ok() {
+                let playback = self.local_playback_metadata().await;
+                state.player.write().buffered_playback = Some(playback);
+                self.update_playback_non_blocking(state);
+                return Ok(true);
+            }
+        }
         let device = self.spotify.session().await.device_id().to_string();
         if let Err(err) = self.transfer_playback(&device, Some(true)).await {
             let err = anyhow::Error::from(err);
@@ -489,6 +685,77 @@ impl AppClient {
         }
         self.update_playback_non_blocking(state);
         Ok(true)
+    }
+
+    /// Resume the song this app's player stopped on when Spotify deactivated
+    /// it (after a while paused), from the same position. Spotify's record of
+    /// that playback is gone by then, so it's loaded again from what was last
+    /// played. Leaves playback on another device alone.
+    #[cfg(feature = "streaming")]
+    async fn resume_parked(&self, state: &SharedState) -> bool {
+        use librespot_connect::{LoadContextOptions, LoadRequestOptions, Options, PlayingTrack};
+        let Some(spirc) = self.stream_conn.lock().clone() else {
+            return false;
+        };
+        let Some(parked) = state.player.read().parked.clone() else {
+            return false;
+        };
+        let Some(last) = self.last_load.lock().clone() else {
+            return false;
+        };
+        if spirc.is_active().await {
+            return false;
+        }
+        let here = self.spotify.session().await.device_id().to_string();
+        let elsewhere = state
+            .player
+            .read()
+            .buffered_playback
+            .as_ref()
+            .and_then(|p| p.device_id.clone())
+            .is_some_and(|d| d != here);
+        if elsewhere {
+            return false;
+        }
+        if let Err(err) = spirc.activate() {
+            tracing::warn!("Couldn't activate the integrated player: {err:#}");
+            return false;
+        }
+        let (shuffle, repeat, repeat_track) = state.player.read().local_options;
+        let options = LoadRequestOptions {
+            start_playing: true,
+            seek_to: u32::try_from(parked.position.num_milliseconds().max(0)).unwrap_or(0),
+            context_options: Some(LoadContextOptions::Options(Options {
+                shuffle,
+                repeat,
+                repeat_track,
+            })),
+            playing_track: Some(PlayingTrack::Uri(parked.uri.clone())),
+        };
+        if let Err(err) = spirc.load(last.request(options)) {
+            tracing::warn!(
+                "Couldn't resume {} on the integrated player: {err:#}",
+                parked.uri
+            );
+            return false;
+        }
+        tracing::info!(
+            "Resumed {} at {}s after Spotify dropped the idle player",
+            parked.uri,
+            parked.position.num_seconds()
+        );
+        let mut playback = self.local_playback_metadata().await;
+        playback.shuffle_state = shuffle;
+        playback.repeat_state = if repeat_track {
+            rspotify::model::RepeatState::Track
+        } else if repeat {
+            rspotify::model::RepeatState::Context
+        } else {
+            rspotify::model::RepeatState::Off
+        };
+        state.player.write().buffered_playback = Some(playback);
+        self.update_playback_non_blocking(state);
+        true
     }
 
     /// Restart the integrated player and move playback to it, waiting until
@@ -520,6 +787,46 @@ impl AppClient {
             return Err(anyhow::Error::from(err).context("move playback to the restarted player"));
         }
         self.retrieve_current_playback(state, true).await
+    }
+
+    /// The songs of the playlist or album `request` starts, when already
+    /// loaded, so the integrated player needn't fetch them again (~0.4 s).
+    #[cfg(feature = "streaming")]
+    fn known_tracks(state: &SharedState, request: &PlayerRequest) -> Option<Vec<String>> {
+        let PlayerRequest::StartPlayback(Playback::Context(id, _), _) = request else {
+            return None;
+        };
+        if !matches!(id, ContextId::Playlist(_) | ContextId::Album(_)) {
+            return None;
+        }
+        let data = state.data.read();
+        let tracks = data.context_tracks(id)?;
+        (!tracks.is_empty()).then(|| tracks.iter().map(|t| t.id.uri()).collect())
+    }
+
+    /// Start downloading a song before it's played (the one under the cursor),
+    /// so playing it starts at once. Skipped near the end of the current song,
+    /// where librespot preloads the next one in its single preload slot.
+    #[cfg(feature = "streaming")]
+    fn preload_track(&self, state: &SharedState, uri: &str) {
+        if self.preloaded.lock().as_deref() == Some(uri) {
+            return;
+        }
+        let Some(player) = self.stream_player.lock().clone() else {
+            return;
+        };
+        if let Some(local) = state.player.read().local.as_ref() {
+            let left = local.duration - local.progress();
+            if local.uri == uri || (local.is_playing && left < chrono::Duration::seconds(40)) {
+                return;
+            }
+        }
+        let Ok(id) = librespot_core::SpotifyUri::from_uri(uri) else {
+            return;
+        };
+        tracing::debug!("Preloading {uri}");
+        player.preload(id);
+        *self.preloaded.lock() = Some(uri.to_string());
     }
 
     /// Whether the integrated player is the device playing, and so owns the
@@ -731,27 +1038,34 @@ impl AppClient {
         &self,
         playback: &Playback,
         current: Option<&PlaybackMetadata>,
+        known_tracks: Option<Vec<String>>,
     ) -> bool {
         use librespot_connect::{
             LoadContextOptions, LoadRequest, LoadRequestOptions, Options, PlayingTrack,
         };
-        let Some(current) = current else {
-            return false; // nothing playing: let Spotify pick the device
-        };
-        let Some(device_id) = current.device_id.as_deref() else {
+        let Some(spirc) = self.stream_conn.lock().clone() else {
             return false;
         };
-        if self.stream_conn.lock().is_none()
-            || self.spotify.session().await.device_id() != device_id
-        {
+        let here = self.spotify.session().await.device_id().to_string();
+        // Play here when this is the device playing, or when nothing is known
+        // to play (e.g. right after starting: no Web API request needed).
+        // Playing on another device (your phone) stays the Web API's job.
+        let ours = current
+            .and_then(|c| c.device_id.as_deref())
+            .is_none_or(|d| d == here);
+        if !ours {
             return false;
         }
-        let Some(active) = self.stream_conn.lock().clone() else {
-            return false;
-        };
-        if !active.is_active().await {
-            return false; // `load` would be ignored; the Web API re-activates it
+        if !spirc.is_active().await {
+            // `load` is ignored until this player is the active device
+            if let Err(err) = spirc.activate() {
+                tracing::warn!("Couldn't activate the integrated player: {err:#}");
+                return false;
+            }
         }
+        let (shuffle, repeat) = current.map_or((false, rspotify::model::RepeatState::Off), |c| {
+            (c.shuffle_state, c.repeat_state)
+        });
         let playing_track = |offset: &Option<rspotify::model::Offset>| match offset {
             None => Some(None),
             Some(rspotify::model::Offset::Uri(uri)) => Some(Some(PlayingTrack::Uri(uri.clone()))),
@@ -761,11 +1075,22 @@ impl AppClient {
             start_playing: true,
             seek_to: 0,
             context_options: Some(LoadContextOptions::Options(Options {
-                shuffle: current.shuffle_state,
-                repeat: current.repeat_state == rspotify::model::RepeatState::Context,
-                repeat_track: current.repeat_state == rspotify::model::RepeatState::Track,
+                shuffle,
+                repeat: repeat == rspotify::model::RepeatState::Context,
+                repeat_track: repeat == rspotify::model::RepeatState::Track,
             })),
             playing_track,
+        };
+        let last = match playback {
+            Playback::Context(ContextId::Tracks(_), _) => return false,
+            Playback::Context(id, _) => LastLoad {
+                context_uri: Some(id.uri()),
+                tracks: known_tracks.clone(),
+            },
+            Playback::URIs(ids, _) => LastLoad {
+                context_uri: None,
+                tracks: Some(ids.iter().map(Id::uri).collect()),
+            },
         };
         let request = match playback {
             Playback::Context(ContextId::Tracks(_), _) => return false,
@@ -773,7 +1098,12 @@ impl AppClient {
                 let Some(track) = playing_track(offset) else {
                     return false;
                 };
-                LoadRequest::from_context_uri(id.uri(), options(track))
+                match known_tracks {
+                    Some(tracks) => {
+                        LoadRequest::from_context_tracks(id.uri(), tracks, options(track))
+                    }
+                    None => LoadRequest::from_context_uri(id.uri(), options(track)),
+                }
             }
             Playback::URIs(ids, offset) => {
                 let Some(track) = playing_track(offset) else {
@@ -782,12 +1112,9 @@ impl AppClient {
                 LoadRequest::from_tracks(ids.iter().map(Id::uri).collect(), options(track))
             }
         };
-        let conn = self.stream_conn.lock();
-        let Some(spirc) = conn.as_ref() else {
-            return false;
-        };
         match spirc.load(request) {
             Ok(()) => {
+                *self.last_load.lock() = Some(last);
                 tracing::info!("Started the playback on the integrated player");
                 true
             }
@@ -805,6 +1132,9 @@ impl AppClient {
         &self,
         request: PlayerRequest,
         mut playback: Option<PlaybackMetadata>,
+        #[cfg_attr(not(feature = "streaming"), allow(unused_variables))] known_tracks: Option<
+            Vec<String>,
+        >,
     ) -> Result<Option<PlaybackMetadata>> {
         // handle requests that don't require an active playback
         match request {
@@ -821,8 +1151,15 @@ impl AppClient {
                     playback.shuffle_state = shuffle;
                 }
                 #[cfg(feature = "streaming")]
-                if self.try_integrated_start(&p, playback.as_ref()).await {
-                    return Ok(playback);
+                if self
+                    .try_integrated_start(&p, playback.as_ref(), known_tracks)
+                    .await
+                {
+                    // nothing was playing: it now is, here
+                    return Ok(Some(match playback {
+                        Some(playback) => playback,
+                        None => self.local_playback_metadata().await,
+                    }));
                 }
                 let device_id = playback.as_ref().and_then(|p| p.device_id.as_deref());
                 self.start_playback(p, device_id).await?;
@@ -988,6 +1325,10 @@ impl AppClient {
                 }
             }
             #[cfg(feature = "streaming")]
+            ClientRequest::PreloadTrack(uri) => {
+                self.preload_track(state, &uri);
+            }
+            #[cfg(feature = "streaming")]
             ClientRequest::GetLocalQueue => {
                 self.refresh_local_queue(state).await;
             }
@@ -1001,15 +1342,36 @@ impl AppClient {
             }
             ClientRequest::GetCurrentUser => {
                 let user = self.current_user().await?;
+                // saved for the greeting at the next start
+                if let Err(err) = store_data_into_file_cache(
+                    FileCacheKey::User,
+                    &config::get_config().cache_folder,
+                    &user,
+                ) {
+                    tracing::warn!("Failed to save the user profile: {err:#}");
+                }
                 state.data.write().user_data.user = Some(user);
             }
             ClientRequest::Player(request) => {
                 #[cfg(feature = "streaming")]
+                let known = Self::known_tracks(state, &request);
+                #[cfg(not(feature = "streaming"))]
+                let known = None;
+                #[cfg(feature = "streaming")]
                 if self.resume_idle_playback(state, &request).await? {
                     return Ok(());
                 }
-                let playback = state.player.read().buffered_playback.clone();
-                let playback = match self.handle_player_request(request.clone(), playback).await {
+                #[cfg_attr(not(feature = "streaming"), allow(unused_mut))]
+                let mut playback = state.player.read().buffered_playback.clone();
+                #[cfg(feature = "streaming")]
+                if playback.is_none() && state.player.read().local.is_some() {
+                    // playing here while the Web API reports nothing (yet)
+                    playback = Some(self.local_playback_metadata().await);
+                }
+                let playback = match self
+                    .handle_player_request(request.clone(), playback, known.clone())
+                    .await
+                {
                     Ok(playback) => playback,
                     #[cfg(feature = "streaming")]
                     Err(err) if is_device_not_found(&err) && state.is_streaming_enabled() => {
@@ -1020,7 +1382,7 @@ impl AppClient {
                         );
                         self.reconnect_integrated_player(state).await?;
                         let playback = state.player.read().buffered_playback.clone();
-                        self.handle_player_request(request, playback).await?
+                        self.handle_player_request(request, playback, known).await?
                     }
                     Err(err) => return Err(err),
                 };
@@ -1101,10 +1463,26 @@ impl AppClient {
                 let cache_miss = uri != USER_LIKED_TRACKS_URI
                     && !state.data.read().caches.context.contains_key(&uri);
                 let is_liked = uri == USER_LIKED_TRACKS_URI;
+                // Show liked songs from the saved copy at once: the fresh list
+                // can take a minute when the Web API is rate limited.
+                if is_liked {
+                    state.data.write().prefill_liked();
+                }
                 if cache_miss || is_liked {
                     let ctx = match context {
                         ContextId::Playlist(playlist_id) => {
-                            self.playlist_context(playlist_id).await?
+                            // librespot reads any playlist, quickly; the Web API
+                            // refuses new apps the songs of playlists you don't own
+                            match self
+                                .playlist_context_via_librespot(state, &playlist_id)
+                                .await
+                            {
+                                Ok(ctx) => ctx,
+                                Err(err) => {
+                                    tracing::warn!("Loading the playlist via librespot failed, using the Web API: {err:#}");
+                                    self.playlist_context(playlist_id).await?
+                                }
+                            }
                         }
                         ContextId::Album(album_id) => self.album_context(album_id).await?,
                         ContextId::Artist(artist_id) => self.artist_context(artist_id).await?,
@@ -1118,7 +1496,16 @@ impl AppClient {
                                 desc: "User's recently played tracks".to_string(),
                             },
                             USER_LIKED_TRACKS_URI => {
-                                let tracks = self.current_user_saved_tracks().await?;
+                                // librespot's connection (one request, ~1 s, not
+                                // rate limited); the Web API only if it fails
+                                let known = state.data.read().user_data.saved_tracks.clone();
+                                let tracks = match self.liked_tracks_via_librespot(&known).await {
+                                    Ok(tracks) => tracks,
+                                    Err(err) => {
+                                        tracing::warn!("Loading liked songs via librespot failed, using the Web API: {err:#}");
+                                        self.current_user_saved_tracks().await?
+                                    }
+                                };
                                 let tracks_hm = tracks
                                     .iter()
                                     .map(|t| (t.id.uri(), t.clone()))
@@ -2841,6 +3228,7 @@ mod queue_edit_tests {
 
 /// Whether Spotify answered "404 Not Found": the device a player command
 /// was meant for isn't registered any more.
+#[cfg(any(feature = "streaming", test))]
 fn is_device_not_found(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         matches!(
@@ -2873,5 +3261,187 @@ mod device_not_found_tests {
         assert!(!is_device_not_found(&http_error(429)), "rate limits aren't");
         assert!(!is_device_not_found(&http_error(500)));
         assert!(!is_device_not_found(&anyhow::anyhow!("no playback found")));
+    }
+}
+
+#[cfg(test)]
+mod liked_cache_tests {
+    use super::{Context, Track};
+    use crate::state::UserData;
+    use rspotify::model::TrackId;
+    use std::collections::HashMap;
+
+    fn track(id: &str, name: &str, added_at: u64) -> (String, Track) {
+        let t = Track {
+            id: TrackId::from_id(id.to_string()).unwrap(),
+            name: name.to_string(),
+            artists: vec![],
+            album: None,
+            duration: std::time::Duration::from_secs(200),
+            explicit: false,
+            added_at,
+        };
+        (format!("spotify:track:{id}"), t)
+    }
+
+    #[test]
+    fn newest_liked_first() {
+        let liked_from_cache = |saved: &HashMap<String, Track>| {
+            UserData {
+                saved_tracks: saved.clone(),
+                ..UserData::default()
+            }
+            .liked_from_cache()
+        };
+        assert!(liked_from_cache(&HashMap::new()).is_none());
+        let saved: HashMap<_, _> = [
+            track("0000000000000000000001", "Old", 100),
+            track("0000000000000000000002", "New", 300),
+            track("0000000000000000000003", "Middle", 200),
+        ]
+        .into_iter()
+        .collect();
+        let Some(Context::Tracks { tracks, .. }) = liked_from_cache(&saved) else {
+            panic!("expected a tracks context");
+        };
+        let names: Vec<_> = tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["New", "Middle", "Old"]);
+    }
+
+    #[test]
+    fn added_at_survives_the_file_cache() {
+        let (_, t) = track("0000000000000000000001", "Song", 1_700_000_000);
+        let json = serde_json::to_string(&t).unwrap();
+        let back: Track = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.added_at, 1_700_000_000);
+        // old cache files (no added_at) still load
+        let old = json.replace(",\"added_at\":1700000000", "");
+        assert!(!old.contains("added_at"));
+        assert_eq!(serde_json::from_str::<Track>(&old).unwrap().added_at, 0);
+    }
+}
+
+/// A librespot track as the app's track (`None` for local files and the like).
+fn track_from_librespot(t: &librespot_metadata::Track) -> Option<Track> {
+    use rspotify::model::{AlbumId, ArtistId, TrackId};
+    let artists = |list: &librespot_metadata::artist::Artists| -> Vec<crate::state::Artist> {
+        list.0
+            .iter()
+            .filter_map(|a| {
+                Some(crate::state::Artist {
+                    id: ArtistId::from_uri(&a.id.to_uri().ok()?).ok()?.into_static(),
+                    name: a.name.clone(),
+                })
+            })
+            .collect()
+    };
+    let album = t.album.id.to_uri().ok().and_then(|uri| {
+        Some(crate::state::Album {
+            id: AlbumId::from_uri(&uri).ok()?.into_static(),
+            release_date: t.album.date.year().to_string(),
+            name: t.album.name.clone(),
+            artists: artists(&t.album.artists),
+            typ: None,
+            added_at: 0,
+        })
+    });
+    Some(Track {
+        id: TrackId::from_uri(&t.id.to_uri().ok()?).ok()?.into_static(),
+        name: t.name.clone(),
+        artists: artists(&t.artists),
+        album,
+        duration: std::time::Duration::from_millis(u64::try_from(t.duration).unwrap_or(0)),
+        explicit: t.is_explicit,
+        added_at: 0,
+    })
+}
+
+/// Look songs up in batches with Spotify's extended-metadata service (what
+/// librespot does for a single song, many at once). Songs it doesn't return
+/// are left out.
+async fn tracks_batched(
+    session: &librespot_core::Session,
+    uris: &[String],
+) -> Vec<(String, Track)> {
+    use librespot_metadata::Metadata;
+    use librespot_protocol::extended_metadata::{
+        BatchedEntityRequest, EntityRequest, ExtensionQuery,
+    };
+    use librespot_protocol::extension_kind::ExtensionKind;
+    use protobuf::Message;
+    const BATCH: usize = 100;
+
+    let requests = uris.chunks(BATCH).map(|chunk| {
+        let req = BatchedEntityRequest {
+            entity_request: chunk
+                .iter()
+                .map(|uri| EntityRequest {
+                    entity_uri: uri.clone(),
+                    query: vec![ExtensionQuery {
+                        extension_kind: protobuf::EnumOrUnknown::new(ExtensionKind::TRACK_V4),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let spclient = session.spclient();
+        async move { spclient.get_extended_metadata(req).await }
+    });
+    let mut out = vec![];
+    for response in futures::future::join_all(requests).await {
+        let response = match response {
+            Ok(r) => r,
+            Err(err) => {
+                tracing::debug!("Batched song lookup failed: {err:#}");
+                continue;
+            }
+        };
+        for array in response.extended_metadata {
+            for data in array.extension_data {
+                let Some(any) = data.extension_data.into_option() else {
+                    continue;
+                };
+                let Ok(msg) = librespot_protocol::metadata::Track::parse_from_bytes(&any.value)
+                else {
+                    continue;
+                };
+                let Ok(id) = librespot_core::SpotifyUri::from_uri(&data.entity_uri) else {
+                    continue;
+                };
+                if let Some(track) = librespot_metadata::Track::parse(&msg, &id)
+                    .ok()
+                    .and_then(|t| track_from_librespot(&t))
+                {
+                    out.push((data.entity_uri, track));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What was loaded on the integrated player: a context (with its songs when
+/// known) or a list of songs.
+#[cfg(feature = "streaming")]
+#[derive(Clone, Debug)]
+struct LastLoad {
+    context_uri: Option<String>,
+    tracks: Option<Vec<String>>,
+}
+
+#[cfg(feature = "streaming")]
+impl LastLoad {
+    fn request(
+        self,
+        options: librespot_connect::LoadRequestOptions,
+    ) -> librespot_connect::LoadRequest {
+        use librespot_connect::LoadRequest;
+        match (self.context_uri, self.tracks) {
+            (Some(uri), Some(tracks)) => LoadRequest::from_context_tracks(uri, tracks, options),
+            (Some(uri), None) => LoadRequest::from_context_uri(uri, options),
+            (None, tracks) => LoadRequest::from_tracks(tracks.unwrap_or_default(), options),
+        }
     }
 }

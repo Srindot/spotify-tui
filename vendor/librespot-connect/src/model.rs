@@ -23,6 +23,8 @@ impl Deref for LoadRequest {
 pub(super) enum PlayContext {
     Uri(String),
     Tracks(Vec<String>),
+    /// A context whose tracks the caller already knows, so it isn't fetched
+    Known { uri: String, tracks: Vec<String> },
 }
 
 /// The parameters for creating a load request
@@ -92,6 +94,22 @@ impl LoadRequest {
     pub fn from_context_uri(context_uri: String, options: LoadRequestOptions) -> Self {
         Self {
             context: PlayContext::Uri(context_uri),
+            options,
+        }
+    }
+
+    /// Create a load request for `context_uri` from its already known `tracks`,
+    /// sparing the fetch of the context before playback can start
+    pub fn from_context_tracks(
+        context_uri: String,
+        tracks: Vec<String>,
+        options: LoadRequestOptions,
+    ) -> Self {
+        Self {
+            context: PlayContext::Known {
+                uri: context_uri,
+                tracks,
+            },
             options,
         }
     }

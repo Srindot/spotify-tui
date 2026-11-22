@@ -147,7 +147,7 @@ Device options are configured in the `[device]` section:
 | `device_type`   | Device type.                             | `speaker`        |
 | `volume`        | Initial volume (percent).                | `70`             |
 | `bitrate`       | Bitrate in kbps (`96`, `160`, or `320`). | `320`            |
-| `audio_cache`   | Enable audio file caching.               | `false`          |
+| `audio_cache`   | Enable audio file caching (capped at 2 GB; least recently played go first). Songs played before start without downloading. | `false`          |
 | `normalization` | Enable audio normalization.              | `false`          |
 | `autoplay`      | Enable autoplay of similar songs.        | `false`          |
 

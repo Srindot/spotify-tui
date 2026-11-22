@@ -1225,7 +1225,7 @@ impl SpircTask {
                     .collect::<Vec<_>>();
 
                 if !all_tracks.is_empty() {
-                    self.load_context_from_tracks(all_tracks)?;
+                    self.load_context_from_tracks(None, all_tracks)?;
                 } else {
                     warn!(
                         "tried to transfer with an invalid state, using fallback as ctx_uri ({fallback})"
@@ -1372,7 +1372,10 @@ impl SpircTask {
                 self.load_context_from_uri(uri, page.as_ref(), autoplay)
                     .await?
             }
-            PlayContext::Tracks(tracks) => self.load_context_from_tracks(tracks)?,
+            PlayContext::Tracks(tracks) => self.load_context_from_tracks(None, tracks)?,
+            PlayContext::Known { uri, tracks } => {
+                self.load_context_from_tracks(Some(uri), tracks)?
+            }
         }
 
         let cmd_options = cmd.options;
@@ -1503,12 +1506,17 @@ impl SpircTask {
         Ok(())
     }
 
-    fn load_context_from_tracks(&mut self, tracks: impl Into<ContextPage>) -> Result<(), Error> {
+    fn load_context_from_tracks(
+        &mut self,
+        uri: Option<String>,
+        tracks: impl Into<ContextPage>,
+    ) -> Result<(), Error> {
         const WEB_API_URI: &str = "spotify:web-api";
+        let uri = uri.unwrap_or_else(|| WEB_API_URI.into());
         let ctx = Context {
             // by providing values for uri/url the player in the official client's isn't frozen
-            uri: Some(WEB_API_URI.into()),
-            url: Some(format!("context://{WEB_API_URI}")),
+            url: Some(format!("context://{uri}")),
+            uri: Some(uri),
             pages: vec![tracks.into()],
             ..Default::default()
         };

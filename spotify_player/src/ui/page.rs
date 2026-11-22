@@ -187,6 +187,12 @@ pub fn render_search_page(
         construct_and_render_block("Episodes", &ui.theme, Borders::TOP, frame, chunks[5]);
 
     // 3. Construct the page's widgets
+    if is_active && focus_state == SearchFocusState::Tracks {
+        let at = ui.current_page_mut().selected().unwrap_or(0);
+        ui.highlighted_track = search_results
+            .and_then(|s| s.tracks.get(at))
+            .map(|t| t.id.uri());
+    }
     let (track_list, n_tracks) = {
         // a heart on the songs you've liked
         let liked_icon = &config::get_config().app_config.liked_icon;
@@ -1142,6 +1148,10 @@ fn render_track_table(
     data: &DataReadGuard,
     is_artist_liked_songs: bool,
 ) {
+    if is_active {
+        let at = ui.current_page_mut().selected().unwrap_or(0);
+        ui.highlighted_track = tracks.get(at).map(|t| t.id.uri());
+    }
     let configs = config::get_config();
     // get the current playing track's URI to decorate such track (if exists) in the track table
     let mut playing_track_uri = String::new();

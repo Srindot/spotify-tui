@@ -42,6 +42,11 @@ pub async fn start_client_handler(
     }
 }
 
+/// How long the cursor rests on a song before it's preloaded (scrolling past
+/// songs doesn't download them).
+#[cfg(feature = "streaming")]
+const PRELOAD_AFTER: Duration = Duration::from_millis(400);
+
 /// Interval between background session-validity checks.
 const SESSION_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const CONTEXT_REFRESH_THROTTLE: Duration = Duration::from_secs(5);
@@ -232,10 +237,29 @@ pub fn start_player_event_watcher(state: &SharedState, client_pub: &flume::Sende
     };
     #[cfg(feature = "streaming")]
     let mut last_local_queue = Instant::now();
+    // the song under the cursor, and since when (preloaded once it settles)
+    #[cfg(feature = "streaming")]
+    let mut hovered: (Option<String>, Instant) = (None, Instant::now());
+    #[cfg(feature = "streaming")]
+    let mut preload_sent: Option<String> = None;
 
     loop {
         // what's coming up on the integrated player: a local call to
         // librespot (no Spotify request), so often is fine
+        #[cfg(feature = "streaming")]
+        if state.is_streaming_enabled() {
+            let now = state.ui.lock().highlighted_track.clone();
+            if now != hovered.0 {
+                hovered = (now, Instant::now());
+            } else if hovered.1.elapsed() >= PRELOAD_AFTER && preload_sent != hovered.0 {
+                if let Some(uri) = hovered.0.clone() {
+                    client_pub
+                        .send(ClientRequest::PreloadTrack(uri))
+                        .unwrap_or_default();
+                }
+                preload_sent.clone_from(&hovered.0);
+            }
+        }
         #[cfg(feature = "streaming")]
         if state.player.read().local.is_some()
             && last_local_queue.elapsed() >= Duration::from_secs(1)
