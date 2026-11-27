@@ -706,7 +706,17 @@ pub fn render_lyrics_page(
     let chunks = Layout::vertical([Constraint::Length(2), Constraint::Fill(0)]).split(rect);
 
     // 3. Construct the page's widgets
-    let Some(progress) = state.player.read().playback_progress() else {
+    // the integrated player's own position first: the Web API's can lag
+    // behind or be missing while requests are rate limited
+    let progress = {
+        let player = state.player.read();
+        player
+            .local
+            .as_ref()
+            .map(crate::state::LocalNowPlaying::progress)
+            .or_else(|| player.playback_progress())
+    };
+    let Some(progress) = progress else {
         frame.render_widget(Paragraph::new("No playback available"), rect);
         return;
     };
@@ -1258,7 +1268,7 @@ fn render_track_table(
             } else {
                 Constraint::Fill(0)
             },
-            Constraint::Fill(1),
+            Constraint::Length(8), // "Duration"
         ],
     )
     .header(
@@ -1377,7 +1387,7 @@ fn render_episode_table(
             Constraint::Length(4),
             Constraint::Fill(6),
             Constraint::Fill(2),
-            Constraint::Fill(1),
+            Constraint::Length(8), // "Duration"
         ],
     )
     .header(

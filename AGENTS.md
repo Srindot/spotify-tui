@@ -4,7 +4,7 @@ This file guides coding agents when working in this repository.
 
 ## Project Overview
 
-`spotify-player` is a terminal Spotify client (requires Spotify Premium) written in Rust. It supports playback control, Spotify Connect, direct streaming via librespot, synced lyrics, desktop notifications, OS media controls, album art rendering, a daemon mode, and a full CLI interface.
+`spotify-tui` is a terminal Spotify client (requires Spotify Premium) written in Rust, built on [spotify-player](https://github.com/aome510/spotify-player). The Cargo package keeps the upstream name `spotify_player`; the binary is `spotify_tui`. It supports playback control, Spotify Connect, direct streaming via librespot, synced lyrics, desktop notifications, OS media controls, album art rendering, a daemon mode, and a full CLI interface.
 
 ## Architecture
 
@@ -29,7 +29,9 @@ This file guides coding agents when working in this repository.
 | `event/mod.rs`                | crossterm input loop; routes events to page or popup handler                |
 | `event/{page,popup}.rs`       | Key event dispatch per page / popup overlay                                 |
 | `ui/mod.rs`                   | ratatui render loop; main layout dispatch                                   |
-| `ui/{page,playback,popup}.rs` | Render functions for pages, playback bar, popups                            |
+| `ui/shell.rs`                 | The three-column layout: sidebar, now playing, Up Next                       |
+| `ui/{page,popup}.rs`          | Render functions for pages and popups                                       |
+| `ui/preview.rs`               | Test that renders the README screenshots (`scripts/screenshots`)            |
 | `ui/streaming.rs`             | FFT audio visualizer: `VisualizationSink`, `VisBands`, bar chart            |
 | `streaming.rs`                | librespot connection + audio backend setup (feature-gated)                  |
 | `cli/`                        | Unix socket server and client for inter-process CLI commands                |
@@ -110,20 +112,21 @@ tracing::debug!("{value:?}");
 
 ## Keeping docs up to date
 
-`README.md` and `docs/config.md` are the primary user-facing references. Update them on any user-visible change:
+`README.md`, `docs/commands.md` (keys, actions, CLI) and `docs/config.md` are the user-facing references. Update them on any user-visible change:
 
 - **New feature / config option** — describe it in `README.md` (`Features`, `Configuration`, …), document the field in `docs/config.md`, and update `examples/app.toml` if applicable.
-- **Changed / removed behaviour** — update affected tables, command descriptions, and usage examples in both files.
-- **New feature flag** — add it to the feature-flags table in `README.md`.
-- **New CLI subcommand** — document it under the CLI section of `README.md`.
+- **Changed / removed behaviour** — update affected tables, command descriptions, and usage examples in all of them.
+- **Visible UI change** — regenerate the pictures with `scripts/screenshots`.
+- **New feature flag** — add it to the optional features table in `README.md`.
+- **New CLI subcommand** — document it under Command line in `docs/commands.md`.
 
-Keep `.github/copilot-instructions.md` and this `AGENTS.md` in sync when project structure, architecture, or conventions change significantly.
+Keep this `AGENTS.md` in sync when project structure, architecture, or conventions change significantly.
 
 ### Adding a new `Command`
 
 1. Add the variant to `Command` in `command.rs` and update `Command::desc()`.
 2. Add a default keybinding in `config/keymap.rs`.
-3. Update the command table in `README.md`.
+3. Update the key tables in `docs/commands.md`.
 
 ## Writing PR descriptions
 

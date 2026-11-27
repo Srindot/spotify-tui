@@ -23,9 +23,6 @@ const FFT_SIZE: usize = 1024;
 const HOP_SIZE: usize = 128;
 pub const NUM_BANDS: usize = 128;
 
-/// Height (in terminal rows) reserved for the audio visualization bar chart.
-pub const VIS_HEIGHT: u16 = 8;
-
 /// Per-FFT-frame decay multiplier for individual bands.
 /// At 44100 Hz / `HOP_SIZE` 128 ≈ 344 hops/s, 0.985^~151 ≈ 1% in ~0.44 s — snappy
 /// enough to track transients, not so slow that it smears.

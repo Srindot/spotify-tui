@@ -85,9 +85,7 @@ struct ComponentStyle {
     playback_track: Option<Style>,
     playback_artists: Option<Style>,
     playback_album: Option<Style>,
-    playback_genres: Option<Style>,
     playback_metadata: Option<Style>,
-    playback_progress_bar: Option<Style>,
     playback_progress_bar_unfilled: Option<Style>,
     current_playing: Option<Style>,
     page_desc: Option<Style>,
@@ -281,35 +279,11 @@ impl Theme {
             .style(&self.palette)
     }
 
-    pub fn playback_genres(&self) -> style::Style {
-        self.component_style
-            .playback_genres
-            .as_ref()
-            .unwrap_or(
-                &Style::default()
-                    .fg(StyleColor::BrightBlack)
-                    .modifiers([StyleModifier::Italic]),
-            )
-            .style(&self.palette)
-    }
-
     pub fn playback_metadata(&self) -> style::Style {
         self.component_style
             .playback_metadata
             .as_ref()
             .unwrap_or(&Style::default().fg(StyleColor::BrightBlack))
-            .style(&self.palette)
-    }
-
-    pub fn playback_progress_bar(&self) -> style::Style {
-        self.component_style
-            .playback_progress_bar
-            .as_ref()
-            .unwrap_or(
-                &Style::default()
-                    .bg(StyleColor::BrightBlack)
-                    .fg(StyleColor::Green),
-            )
             .style(&self.palette)
     }
 

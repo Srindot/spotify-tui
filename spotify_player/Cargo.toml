@@ -4,8 +4,8 @@ version = "0.25.1"
 authors = ["Thang Pham <phamducthang1234@gmail.com>"]
 edition = "2021"
 license = "MIT"
-description = "A Spotify player in the terminal with full feature parity"
-repository = "https://github.com/aome510/spotify-player"
+description = "A good-looking Spotify player for the terminal"
+repository = "https://github.com/Srindot/spotify-tui"
 keywords = ["spotify", "tui", "ratatui", "player"]
 readme = "../README.md"
 

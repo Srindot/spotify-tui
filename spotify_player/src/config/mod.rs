@@ -418,7 +418,7 @@ impl Default for AppConfig {
 impl Default for DeviceConfig {
     fn default() -> Self {
         Self {
-            name: "spotify-player".to_string(),
+            name: "spotify-tui".to_string(),
             device_type: "speaker".to_string(),
             volume: 70,
             bitrate: 320,

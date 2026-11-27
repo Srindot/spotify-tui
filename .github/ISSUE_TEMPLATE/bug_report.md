@@ -16,9 +16,7 @@ Steps to reproduce the bug.
 A clear and concise description of what you expected to happen.
 
 **Log and backtrace**
-Log and backtrace of a run reproducing the bug to help debug the issue, which are usually located in `$HOME/.cache/spotify-player/`.
-
-Please refer to [this URL](https://github.com/aome510/spotify-player?tab=readme-ov-file#logging) for more details.
+The log of a run that shows the bug: `$HOME/.cache/spotify-player/spotify-player-*.log` (and the `.backtrace` file next to it after a crash).
 
 **Screenshots**
 If applicable, add screenshots to help explain your problem.
@@ -26,8 +24,9 @@ If applicable, add screenshots to help explain your problem.
 **Environment**
 
 - OS:
-- Application version:
-- Application features: if applicable, provide [cargo features](https://doc.rust-lang.org/cargo/reference/features.html) used to build `spotify_player`
+- Terminal:
+- Version (`spotify_tui -V`):
+- Features (`spotify_tui features`):
 
 **Additional context**
 Add any other context about the problem here.

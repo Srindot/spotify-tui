@@ -31,9 +31,7 @@ playback_status = { fg = "#ebbcba", modifiers = ["Bold"] }
 playback_track = { fg = "#e0def4", modifiers = ["Bold"] }
 playback_artists = { fg = "#ebbcba" }
 playback_album = { fg = "#c4a7e7", modifiers = ["Italic"] }
-playback_genres = { fg = "#6e6a86" }
 playback_metadata = { fg = "#9ccfd8" }
-playback_progress_bar = { fg = "#ebbcba" }
 playback_progress_bar_unfilled = { fg = "#403d52" }
 current_playing = { fg = "#f6c177", modifiers = ["Bold"] }
 page_desc = { fg = "#c4a7e7", modifiers = ["Bold"] }
@@ -72,9 +70,7 @@ playback_status = { fg = "#ea9a97", modifiers = ["Bold"] }
 playback_track = { fg = "#e0def4", modifiers = ["Bold"] }
 playback_artists = { fg = "#ea9a97" }
 playback_album = { fg = "#c4a7e7", modifiers = ["Italic"] }
-playback_genres = { fg = "#6e6a86" }
 playback_metadata = { fg = "#9ccfd8" }
-playback_progress_bar = { fg = "#ea9a97" }
 playback_progress_bar_unfilled = { fg = "#44415a" }
 current_playing = { fg = "#f6c177", modifiers = ["Bold"] }
 page_desc = { fg = "#c4a7e7", modifiers = ["Bold"] }
@@ -113,9 +109,7 @@ playback_status = { fg = "#d7827e", modifiers = ["Bold"] }
 playback_track = { fg = "#464261", modifiers = ["Bold"] }
 playback_artists = { fg = "#d7827e" }
 playback_album = { fg = "#907aa9", modifiers = ["Italic"] }
-playback_genres = { fg = "#9893a5" }
 playback_metadata = { fg = "#56949f" }
-playback_progress_bar = { fg = "#d7827e" }
 playback_progress_bar_unfilled = { fg = "#dfdad9" }
 current_playing = { fg = "#b4637a", modifiers = ["Bold"] }
 page_desc = { fg = "#907aa9", modifiers = ["Bold"] }

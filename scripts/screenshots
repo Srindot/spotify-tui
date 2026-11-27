@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Regenerates the README pictures: assets/screenshots/*.png and
+# assets/preview.gif. Renders the real UI with made-up music in a test (no
+# Spotify account, no terminal window), then draws the cells as images.
+#
+# Needs: cargo, python3 with Pillow and fontTools, ImageMagick (for the
+# sample cover), and the JetBrains Mono and DejaVu fonts.
+set -euo pipefail
+cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# an abstract Rosé Pine cover, so no real album art ends up in the repo
+convert -size 600x600 xc:'#191724' \
+	\( -size 600x600 radial-gradient:'#eb6f92'-'#191724' -channel A -evaluate set 85% +channel \) -compose over -composite \
+	\( -size 600x600 plasma:'#c4a7e7'-'#31748f' -blur 0x18 -channel A -evaluate set 55% +channel \) -compose overlay -composite \
+	-fill none -stroke '#f6c177' -strokewidth 3 -draw "circle 300,300 300,170" \
+	-stroke '#ebbcba' -strokewidth 2 -draw "circle 300,300 300,120" \
+	-stroke '#9ccfd8' -strokewidth 1 -draw "circle 300,300 300,80" \
+	"$work/cover.png"
+
+PREVIEW_OUT="$work/shots" PREVIEW_COVER="$work/cover.png" \
+	cargo test --release --locked -p spotify_player --features image -- --ignored render_screenshots
+
+python3 scripts/render_screenshots.py "$work/shots" "$work/cover.png" assets/screenshots
+SCALE=1 python3 scripts/render_screenshots.py "$work/shots/frames" "$work/cover.png" "$work/frames" >/dev/null
+python3 scripts/render_screenshots.py --gif "$work/frames" assets/preview.gif

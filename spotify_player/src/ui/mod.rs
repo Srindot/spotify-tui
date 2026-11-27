@@ -2,7 +2,7 @@ use crate::{
     config,
     state::{
         Album, Artist, ArtistFocusState, BrowsePageUIState, Context, ContextPageUIState,
-        DataReadGuard, Id, LibraryFocusState, MutableWindowState, PageState, PlaybackMetadata,
+        DataReadGuard, Id, LibraryFocusState, MutableWindowState, PageState,
         PlaylistCreateCurrentField, PlaylistFolderItem, PlaylistPopupAction, PopupState,
         SearchFocusState, SharedState, Track, UIStateGuard,
     },
@@ -13,8 +13,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, BorderType, Borders, Cell, Gauge, LineGauge, List, ListItem, ListState, Paragraph,
-        Row, Table, TableState, Wrap,
+        Block, BorderType, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table,
+        TableState,
     },
     Frame,
 };
@@ -27,10 +27,9 @@ type Terminal = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::St
 #[cfg(feature = "image")]
 pub mod cover_image;
 mod page;
-// the old top playback window, replaced by `shell`; kept to ease upstream merges
-#[allow(dead_code)]
-mod playback;
 mod popup;
+#[cfg(all(test, feature = "image", feature = "streaming"))]
+mod preview;
 mod shell;
 pub mod single_line_input;
 #[cfg(feature = "streaming")]

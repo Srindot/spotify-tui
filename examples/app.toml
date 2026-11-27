@@ -1,12 +1,10 @@
-theme = "default"
+theme = "rose-pine"
 login_redirect_uri = "http://127.0.0.1:8989/login"
 client_id = "d420a117a32841c2b3474932e49fb54b"
 ncspot_only_get_endpoints = ["me/playlists", "search", "playlists/"]
 client_port = 8080
 tracks_playback_limit = 50
 top_tracks_limit = 100
-playback_format = "{status} {track} • {artists}\n{album} • {genres}\n{metadata}"
-playback_metadata_fields = ["repeat", "shuffle", "volume", "device"]
 notify_format = { summary = "{track} • {artists}", body = "{album}" }
 notify_timeout_in_secs = 0
 notify_transient = false
@@ -22,16 +20,13 @@ notify_streaming_only = false
 play_icon = "▶"
 pause_icon = "▌▌"
 liked_icon = "♥"
-genre_num = 2
-cover_img_length = 0
-cover_img_width = 5
 cover_img_pixels = 16
 seek_duration_secs = 5
 custom_queue = true
 enable_relative_line_number = false
 
 [device]
-name = "spotify-player"
+name = "spotify-tui"
 device_type = "speaker"
 volume = 70
 bitrate = 320
@@ -39,7 +34,3 @@ audio_cache = false
 normalization = false
 autoplay = false
 
-[layout]
-library = { playlist_percent = 40, album_percent = 40 }
-playback_window_position = "Top"
-playback_window_height = 6

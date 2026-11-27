@@ -8,9 +8,8 @@
   - [Player event hook command](#player-event-hook-command)
   - [Client id command](#client-id-command)
   - [Device configurations](#device-configurations)
-  - [Layout configurations](#layout-configurations)
+  - [Options from spotify-player's layout](#options-from-spotify-players-layout)
 - [Themes](#themes)
-  - [Use script to add theme](#use-script-to-add-theme)
   - [Palette](#palette)
   - [Component Styles](#component-styles)
 - [Keymaps](#keymaps)
@@ -21,11 +20,10 @@ Configuration files are located in the application's configuration directory, wh
 
 A sample `app.toml` is available at [examples/app.toml](../examples/app.toml).
 
-`spotify_player` uses `app.toml` for application settings. Available options:
-`spotify_player` also supports cli config overriding using -o / --config-override flag. Example:
+`app.toml` holds the application settings. Any option can also be overridden for one run with `-o` / `--config-override`:
 
 ```bash
-spotify_player -o device.volume=80 -o theme=dracula
+spotify_tui -o device.volume=80 -o theme=rose-pine-moon
 ```
 
 | Option                            | Description                                                                                         | Default                                                                |
@@ -38,8 +36,6 @@ spotify_player -o device.volume=80 -o theme=dracula
 | `log_folder`                      | Path to store log files.                                                                            | `None`                                                                 |
 | `tracks_playback_limit`           | Maximum number of tracks in a playback session.                                                     | `50`                                                                   |
 | `top_tracks_limit`                | Maximum number of tracks returned on the user's top tracks page.                                    | `100`                                                                  |
-| `playback_format`                 | Format string for the playback window.                                                              | `{status} {track} • {artists} {liked}\n{album} • {genres}\n{metadata}` |
-| `playback_metadata_fields`        | Ordered list of metadata fields displayed in the playback UI `{metadata}` placeholder.              | `["repeat", "shuffle", "volume", "device"]`                            |
 | `notify_format`                   | Notification format (if `notify` feature enabled).                                                  | `{ summary = "{track} • {artists}", body = "{album}" }`                |
 | `notify_timeout_in_secs`          | Notification timeout in seconds (if `notify` feature enabled).                                      | `0`                                                                    |
 | `notify_transient`                | Send transient notifications (Linux only, if `notify` feature enabled).                             | `false`                                                                |
@@ -62,12 +58,6 @@ spotify_player -o device.volume=80 -o theme=dracula
 | `liked_icon`                      | Icon for liked songs.                                                                               | `♥`                                                                    |
 | `explicit_icon`                   | Icon for explicit songs.                                                                            | `(E)`                                                                  |
 | `border_type`                     | Border style: `Hidden`, `Plain`, `Rounded`, `Double`, or `Thick`.                                   | `Plain`                                                                |
-| `progress_bar_type`               | Progress bar style: `Rectangle` or `Line`.                                                          | `Rectangle`                                                            |
-| `progress_bar_position`           | Progress bar position: `Bottom` or `Right`.                                                         | `Bottom`                                                               |
-| `layout`                          | Layout configuration (see below).                                                                   | See below                                                              |
-| `genre_num`                       | Max number of genres to display in playback text.                                                   | `2`                                                                    |
-| `cover_img_length`                | Cover image length in terminal columns (requires `image` feature).                                  | `0` (auto, see notes)                                                  |
-| `cover_img_width`                 | Cover image width in terminal rows (requires `image` feature).                                      | `5`                                                                    |
 | `cover_img_pixels`                | Pixels per side for cover image (requires `pixelate` feature).                                      | `16`                                                                   |
 | `seek_duration_secs`              | Seek duration in seconds for seek commands.                                                         | `5`                                                                    |
 | `sort_artist_albums_by_type`      | Sort albums by type on artist pages.                                                                | `false`                                                                |
@@ -80,14 +70,13 @@ spotify_player -o device.volume=80 -o theme=dracula
 
 ### Notes
 
-- By default, `spotify-player` uses [ncspot](https://github.com/hrkfdn/ncspot)'s client ID for compatibility with Spotify's API. When a custom `client_id` is configured, most requests use it first and any `4xx` response is retried once with a separately authenticated ncspot fallback client. Each Web API token is stored as `<client_id>_token.json`, so changing `client_id` selects a different cache instead of reusing a token issued to another client. The fallback OAuth flow always uses `http://127.0.0.1:8989/login`, while `login_redirect_uri` applies only to the custom client. See the [Authentication section of the README](../README.md#authentication) for details.
-- The custom client has no request middleware. For ncspot requests, `spotify-player` stores `Retry-After` durations globally and retries GET requests up to `api_rate_limit_retries` times. New ncspot GET requests wait for an active `Retry-After` period, while mutation requests are never delayed or retried by the middleware.
-- `ap_port` and `proxy` are passed to Librespot for session configuration. Librespot uses its defaults if unset.
+- By default, spotify-tui uses [ncspot](https://github.com/hrkfdn/ncspot)'s client ID for compatibility with Spotify's API. When a custom `client_id` is configured, most requests use it first and any `4xx` response is retried once with a separately authenticated ncspot fallback client. Each Web API token is stored as `<client_id>_token.json`, so changing `client_id` selects a different cache instead of reusing a token issued to another client. The fallback OAuth flow always uses `http://127.0.0.1:8989/login`, while `login_redirect_uri` applies only to the custom client. See [First run](../README.md#first-run) in the README.
+- The custom client has no request middleware. For ncspot requests, spotify-tui stores `Retry-After` durations globally and retries GET requests up to `api_rate_limit_retries` times. New ncspot GET requests wait for an active `Retry-After` period, while mutation requests are never delayed or retried by the middleware.
+- `ap_port` and `proxy` are passed to Librespot for session configuration. Librespot uses its defaults if unset. When the streaming port (4070) is blocked, as on many campus and office networks, the app retries on port 443 after 10 seconds; set `ap_port = 443` to skip the wait.
 - Setting a positive `app_refresh_duration_in_ms` increases API usage and may trigger rate limits. By default, `playback_refresh_duration_in_ms=0` refreshes playback only on events or commands.
 - `enable_streaming` accepts `Always`, `Never`, or `DaemonOnly`. For backward compatibility, `true`/`false` are also accepted.
-- `border_type`, `progress_bar_type`, and `progress_bar_position` accept only the values listed in the table above.
+- `border_type` accepts only the values listed in the table above.
 - `explicit_icon` can be set to any Unicode character or an empty string to disable explicit markers.
-- `cover_img_length = 0` (the default) auto-derives the cover's column count from the terminal's cell aspect ratio. Set a non-zero `cover_img_length` to size the box manually.
 
 #### Media control
 
@@ -143,7 +132,7 @@ Device options are configured in the `[device]` section:
 
 | Option          | Description                              | Default          |
 | --------------- | ---------------------------------------- | ---------------- |
-| `name`          | Device name.                             | `spotify-player` |
+| `name`          | Device name.                             | `spotify-tui`    |
 | `device_type`   | Device type.                             | `speaker`        |
 | `volume`        | Initial volume (percent).                | `70`             |
 | `bitrate`       | Bitrate in kbps (`96`, `160`, or `320`). | `320`            |
@@ -153,30 +142,17 @@ Device options are configured in the `[device]` section:
 
 See the [Librespot wiki](https://github.com/librespot-org/librespot/wiki/Options) for more details on these options.
 
-### Layout configuration
+### Options from spotify-player's layout
 
-The `[layout]` section configures the UI layout:
-
-| Option                     | Description                                          | Default |
-| -------------------------- | ---------------------------------------------------- | ------- |
-| `library.album_percent`    | Percentage of the album window in the library.       | `40`    |
-| `library.playlist_percent` | Percentage of the playlist window in the library.    | `40`    |
-| `playback_window_position` | Position of the playback window (`Top` or `Bottom`). | `Top`   |
-| `playback_window_height`   | Height of the playback window.                       | `6`     |
-
-Example:
-
-```toml
-
-[layout]
-library = { album_percent = 40, playlist_percent = 40 }
-playback_window_position = "Top"
-
-```
+`playback_format`, `playback_metadata_fields`, `progress_bar_type`,
+`progress_bar_position`, `genre_num`, `cover_img_length`, `cover_img_width` and
+the `[layout]` section belonged to spotify-player's playback window. This
+layout doesn't have that window, so they are still accepted but have no
+effect.
 
 ## Themes
 
-`spotify_player` uses `theme.toml` for custom themes.
+Three Rosé Pine themes are built in: `rose-pine` (the default), `rose-pine-moon` and `rose-pine-dawn`. Press `T` in the app to switch. Your own themes go in `theme.toml`.
 
 Sample themes are available at [examples/theme.toml](../examples/theme.toml).
 
@@ -202,9 +178,7 @@ The `component_style` table customizes UI component appearance. All fields are o
 | `playback_track`                 | Style for the currently playing track name                |
 | `playback_artists`               | Style for the artist(s) of the current track              |
 | `playback_album`                 | Style for the album name of the current track             |
-| `playback_genres`                | Style for the genres of the current track                 |
 | `playback_metadata`              | Style for the metadata section in playback                |
-| `playback_progress_bar`          | Style for the filled portion of the playback progress bar |
 | `playback_progress_bar_unfilled` | Style for the unfilled portion (only for `Line` type)     |
 | `current_playing`                | Style for the currently playing item in lists             |
 | `page_desc`                      | Style for the page description                            |
@@ -247,9 +221,7 @@ playback_status = { fg = "Cyan", modifiers = ["Bold"] }
 playback_track = { fg = "Cyan", modifiers = ["Bold"] }
 playback_artists = { fg = "Cyan", modifiers = ["Bold"] }
 playback_album = { fg = "Yellow" }
-playback_genres = { fg = "BrightBlack", modifiers = ["Italic"] }
 playback_metadata = { fg = "BrightBlack" }
-playback_progress_bar = { bg = "BrightBlack", fg = "Green" }
 playback_progress_bar_unfilled = { bg = "BrightBlack" }
 current_playing = { fg = "Green", modifiers = ["Bold"] }
 page_desc = { fg = "Cyan", modifiers = ["Bold"] }
@@ -286,18 +258,6 @@ Supported modifiers:
 
 Specify multiple modifiers as a list: `modifiers = ["Bold", "Underlined"]`.
 
-### Use script to add theme
-
-The [`theme_parse`](../scripts/theme_parse) Python script (requires `toml` and `requests`) converts [iTerm2/alacritty color schemes](https://github.com/mbadolato/iTerm2-Color-Schemes/tree/master/alacritty) to compatible theme format.
-
-Example:
-
-```
-./theme_parse "iTerm2 Solarized Dark" "solarized_dark" >> ~/.config/spotify-player/theme.toml
-```
-
-This converts the [Builtin Solarized Dark](https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/alacritty/Builtin%20Solarized%20Dark.yml) color scheme to a theme named `solarized_dark`.
-
 ### Palette
 
 A theme's `palette` table can include:
@@ -325,7 +285,7 @@ Omitted fields use terminal defaults. Values can be color names or hex codes. Se
 
 ## Keymaps
 
-`spotify_player` uses `keymap.toml` to add or override [default key mappings](../README.md#commands). Add a `keymaps` entry to define a new mapping, or set the command to `None` to remove one. Example:
+`keymap.toml` adds to or overrides the [default keys](commands.md). Add a `keymaps` entry to define a new mapping, or set the command to `None` to remove one. Example:
 
 ```toml
 [[keymaps]]
@@ -354,11 +314,11 @@ command = { SeekBackward = { } }
 key_sequence = "Q"
 ```
 
-A complete list of actions is available [here](../README.md#actions).
+A complete list of actions is available [here](commands.md#actions).
 
 ## Actions
 
-Actions are defined in `keymap.toml` and triggered by unbound key sequences. Actions target the selected item by default, but can be configured with `target` set to `PlayingTrack` or `SelectedItem`. See the [README](../README.md#actions) for available actions.
+Actions are defined in `keymap.toml` and triggered by unbound key sequences. Actions target the selected item by default, but can be configured with `target` set to `PlayingTrack` or `SelectedItem`. See [the list of actions](commands.md#actions).
 
 Example:
 
